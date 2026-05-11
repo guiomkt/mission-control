@@ -1,12 +1,14 @@
 import { NextResponse } from "next/server";
-import { readFileSync } from "fs";
-import { join } from "path";
+import { promises as fs } from "fs";
+import path from "path";
+import { OPENCLAW_DIR, OPENCLAW_WORKSPACE } from "@/lib/paths";
+import { listAgents, listSessions } from "@/lib/openclaw-client";
 
 export const dynamic = "force-dynamic";
 
 interface Agent {
   id: string;
-  name?: string;
+  name: string;
   emoji: string;
   color: string;
   model: string;
@@ -19,129 +21,157 @@ interface Agent {
     emoji: string;
     color: string;
   }>;
-  botToken?: string;
+  botToken?: "configured" | undefined;
   status: "online" | "offline";
   lastActivity?: string;
   activeSessions: number;
 }
 
-// Fallback config used when an agent doesn't define its own ui config in openclaw.json.
-// The main agent reads name/emoji from env vars; all others fall back to generic defaults.
-// Override via each agent's openclaw.json → ui.emoji / ui.color / name fields.
 const DEFAULT_AGENT_CONFIG: Record<string, { emoji: string; color: string; name?: string }> = {
   main: {
-    emoji: process.env.NEXT_PUBLIC_AGENT_EMOJI || "🤖",
+    emoji: process.env.NEXT_PUBLIC_AGENT_EMOJI || "🦞",
     color: "#ff6b35",
     name: process.env.NEXT_PUBLIC_AGENT_NAME || "Mission Control",
   },
 };
 
-/**
- * Get agent display info (emoji, color, name) from openclaw.json or defaults
- */
-function getAgentDisplayInfo(agentId: string, agentConfig: any): { emoji: string; color: string; name: string } {
-  // First try to get from agent's own config in openclaw.json
-  const configEmoji = agentConfig?.ui?.emoji;
-  const configColor = agentConfig?.ui?.color;
-  const configName = agentConfig?.name;
+interface AgentConfigEntry {
+  id: string;
+  name?: string;
+  workspace?: string;
+  ui?: { emoji?: string; color?: string };
+  subagents?: { allowAgents?: string[] };
+  model?: { primary?: string };
+}
 
-  // Then try defaults
-  const defaults = DEFAULT_AGENT_CONFIG[agentId];
-
-  return {
-    emoji: configEmoji || defaults?.emoji || "🤖",
-    color: configColor || defaults?.color || "#666666",
-    name: configName || defaults?.name || agentId,
+interface OpenClawConfig {
+  agents?: {
+    list?: AgentConfigEntry[];
+    defaults?: { model?: { primary?: string } | string };
   };
+  channels?: {
+    telegram?: {
+      dmPolicy?: string;
+      accounts?: Record<string, { dmPolicy?: string; botToken?: string }>;
+    };
+  };
+}
+
+function getDisplayInfo(
+  agentId: string,
+  entry: AgentConfigEntry | undefined,
+): { emoji: string; color: string; name: string } {
+  const defaults = DEFAULT_AGENT_CONFIG[agentId];
+  return {
+    emoji: entry?.ui?.emoji ?? defaults?.emoji ?? "🤖",
+    color: entry?.ui?.color ?? defaults?.color ?? "#666666",
+    name: entry?.name ?? defaults?.name ?? agentId,
+  };
+}
+
+async function readConfig(): Promise<OpenClawConfig | null> {
+  try {
+    const raw = await fs.readFile(path.join(OPENCLAW_DIR, "openclaw.json"), "utf-8");
+    return JSON.parse(raw) as OpenClawConfig;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Check if an agent has recent activity by looking for today's memory file.
+ * Returns the mtime if found, undefined otherwise.
+ */
+async function lastActivityFromMemory(): Promise<Date | undefined> {
+  try {
+    const today = new Date().toISOString().split("T")[0];
+    const stat = await fs.stat(path.join(OPENCLAW_WORKSPACE, "memory", `${today}.md`));
+    return stat.mtime;
+  } catch {
+    return undefined;
+  }
 }
 
 export async function GET() {
   try {
-    // Read openclaw config
-    const configPath = (process.env.OPENCLAW_DIR || "/root/.openclaw") + "/openclaw.json";
-    const config = JSON.parse(readFileSync(configPath, "utf-8"));
+    // Filesystem-discovered agents (truth source per Phase 2).
+    const fsAgents = await listAgents();
+    const config = await readConfig();
 
-    // Get agents from config
-    const agents: Agent[] = config.agents.list.map((agent: any) => {
-      const agentInfo = getAgentDisplayInfo(agent.id, agent);
+    // Build a lookup of canonical config entries by id (if config exists).
+    const configById = new Map<string, AgentConfigEntry>();
+    for (const a of config?.agents?.list ?? []) {
+      configById.set(a.id, a);
+    }
 
-      // Get telegram account info
-      const telegramAccount =
-        config.channels?.telegram?.accounts?.[agent.id];
-      const botToken = telegramAccount?.botToken;
+    // Activity is computed once per request (cheap memory-file stat).
+    const lastMemoryMtime = await lastActivityFromMemory();
+    const now = Date.now();
 
-      // Check if agent has recent activity
-      const memoryPath = join(agent.workspace, "memory");
-      let lastActivity = undefined;
-      let status: "online" | "offline" = "offline";
+    const agents: Agent[] = await Promise.all(
+      fsAgents.map(async (a) => {
+        const entry = configById.get(a.id);
+        const display = getDisplayInfo(a.id, entry);
 
-      try {
-        const today = new Date().toISOString().split("T")[0];
-        const memoryFile = join(memoryPath, `${today}.md`);
-        const stat = require("fs").statSync(memoryFile);
-        lastActivity = stat.mtime.toISOString();
-        // Consider online if activity within last 5 minutes
-        status =
-          Date.now() - stat.mtime.getTime() < 5 * 60 * 1000
-            ? "online"
-            : "offline";
-      } catch (e) {
-        // No recent activity
-      }
+        const telegramAccount = config?.channels?.telegram?.accounts?.[a.id];
+        const sessions = await listSessions(a.id);
 
-      // Get details of allowed subagents
-      const allowAgents = agent.subagents?.allowAgents || [];
-      const allowAgentsDetails = allowAgents.map((subagentId: string) => {
-        // Find subagent in config
-        const subagentConfig = config.agents.list.find(
-          (a: any) => a.id === subagentId
-        );
-        if (subagentConfig) {
-          const subagentInfo = getAgentDisplayInfo(subagentId, subagentConfig);
-          return {
-            id: subagentId,
-            name: subagentConfig.name || subagentInfo.name,
-            emoji: subagentInfo.emoji,
-            color: subagentInfo.color,
-          };
+        // "online" if today's memory was touched in the last 5 minutes AND this
+        // is the main agent (the only one writing memory). Other agents stay
+        // offline unless we extend the heuristic later.
+        let status: "online" | "offline" = "offline";
+        let lastActivity: string | undefined;
+        if (a.id === "main" && lastMemoryMtime) {
+          lastActivity = lastMemoryMtime.toISOString();
+          status =
+            now - lastMemoryMtime.getTime() < 5 * 60 * 1000 ? "online" : "offline";
         }
-        // Fallback if subagent not found in config
-        const fallbackInfo = getAgentDisplayInfo(subagentId, null);
-        return {
-          id: subagentId,
-          name: fallbackInfo.name,
-          emoji: fallbackInfo.emoji,
-          color: fallbackInfo.color,
-        };
-      });
 
-      return {
-        id: agent.id,
-        name: agent.name || agentInfo.name,
-        emoji: agentInfo.emoji,
-        color: agentInfo.color,
-        model:
-          agent.model?.primary || config.agents.defaults.model.primary,
-        workspace: agent.workspace,
-        dmPolicy:
-          telegramAccount?.dmPolicy ||
-          config.channels?.telegram?.dmPolicy ||
-          "pairing",
-        allowAgents,
-        allowAgentsDetails,
-        botToken: botToken ? "configured" : undefined,
-        status,
-        lastActivity,
-        activeSessions: 0, // TODO: get from sessions API
-      };
-    });
+        const allowAgents = entry?.subagents?.allowAgents ?? [];
+        const allowAgentsDetails = allowAgents.map((subId) => {
+          const subEntry = configById.get(subId);
+          const subDisplay = getDisplayInfo(subId, subEntry);
+          return {
+            id: subId,
+            name: subEntry?.name || subDisplay.name,
+            emoji: subDisplay.emoji,
+            color: subDisplay.color,
+          };
+        });
+
+        const fallbackModel = (() => {
+          const dm = config?.agents?.defaults?.model;
+          if (typeof dm === "string") return dm;
+          return dm?.primary ?? "";
+        })();
+
+        return {
+          id: a.id,
+          name: entry?.name || display.name,
+          emoji: display.emoji,
+          color: display.color,
+          model: entry?.model?.primary ?? fallbackModel ?? (a.models[0] ?? ""),
+          workspace: entry?.workspace || a.workspace,
+          dmPolicy:
+            telegramAccount?.dmPolicy ||
+            config?.channels?.telegram?.dmPolicy ||
+            "pairing",
+          allowAgents,
+          allowAgentsDetails,
+          botToken: telegramAccount?.botToken ? "configured" : undefined,
+          status,
+          lastActivity,
+          activeSessions: sessions.length,
+        };
+      }),
+    );
 
     return NextResponse.json({ agents });
   } catch (error) {
-    console.error("Error reading agents:", error);
+    console.error("[api/agents] error", error);
     return NextResponse.json(
       { error: "Failed to load agents" },
-      { status: 500 }
+      { status: 500 },
     );
   }
 }
