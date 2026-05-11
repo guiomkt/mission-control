@@ -97,45 +97,13 @@ export default function SystemMonitorPage() {
     setTimeout(() => setToast(null), 3000);
   };
 
-  const handleServiceAction = async (svc: SystemdService, action: "restart" | "stop" | "start" | "logs") => {
-    const key = `${svc.name}-${action}`;
-    setActionLoading((prev) => ({ ...prev, [key]: true }));
-
-    try {
-      if (action === "logs") {
-        setLogsModal({ name: svc.name, backend: svc.backend || "pm2", content: "", loading: true });
-      }
-
-      const res = await fetch("/api/system/services", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: svc.name, backend: svc.backend || "pm2", action }),
-      });
-
-      const data = await res.json();
-
-      if (!res.ok) throw new Error(data.error || "Action failed");
-
-      if (action === "logs") {
-        setLogsModal({ name: svc.name, backend: svc.backend || "pm2", content: data.output, loading: false });
-      } else {
-        showToast(`✅ ${svc.name}: ${action} successful`);
-        // Refresh data after action
-        setTimeout(async () => {
-          const r = await fetch("/api/system/monitor");
-          if (r.ok) setSystemData(await r.json());
-        }, 2000);
-      }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "Action failed";
-      if (action === "logs") {
-        setLogsModal({ name: svc.name, backend: svc.backend || "pm2", content: `Error: ${msg}`, loading: false });
-      } else {
-        showToast(`❌ ${svc.name}: ${msg}`, "error");
-      }
-    } finally {
-      setActionLoading((prev) => ({ ...prev, [key]: false }));
-    }
+  // Service start/stop/restart/logs actions were removed in V1 hardening:
+  // the /api/system/services endpoint (allowed systemctl/pm2/docker generic
+  // commands) is gone. The Services tab is now read-only — status display
+  // without control. Service operations belong in the OpenClaw gateway,
+  // not in the operator panel.
+  const handleServiceAction = async (_svc: SystemdService, _action: "restart" | "stop" | "start" | "logs") => {
+    showToast("Service actions are disabled in this build (read-only).", "error");
   };
 
   if (loading) {

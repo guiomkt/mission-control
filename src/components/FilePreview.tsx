@@ -142,7 +142,7 @@ export function FilePreview({ workspace, path, name, onClose }: FilePreviewProps
       return;
     }
 
-    fetch(`/api/browse?workspace=${encodeURIComponent(workspace)}&path=${encodeURIComponent(path)}&content=true`)
+    fetch(`/api/files/content?path=${encodeURIComponent(path)}`)
       .then((res) => {
         if (!res.ok) throw new Error("Failed to load file");
         return res.json();
@@ -155,7 +155,7 @@ export function FilePreview({ workspace, path, name, onClose }: FilePreviewProps
         setError(err.message);
         setLoading(false);
       });
-  }, [workspace, path, isImage]);
+  }, [path, isImage]);
 
   const handleDownload = () => {
     const blob = new Blob([content || ""], { type: "text/plain" });
@@ -299,7 +299,7 @@ export function FilePreview({ workspace, path, name, onClose }: FilePreviewProps
           {!loading && !error && isImage && (
             <div className="flex items-center justify-center h-full">
               <img
-                src={`/api/browse?workspace=${encodeURIComponent(workspace)}&path=${encodeURIComponent(path)}&raw=true`}
+                src={`/api/files/content?path=${encodeURIComponent(path)}`}
                 alt={name}
                 className="max-w-full max-h-full object-contain rounded-lg"
                 onError={() => setError("Failed to load image")}
