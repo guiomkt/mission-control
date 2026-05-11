@@ -7,15 +7,19 @@ import {
   ChevronDown,
   ChevronUp,
   Bot,
+  Play,
+  Pause,
+  Trash2,
 } from "lucide-react";
 
 /**
- * Cron job card (V1 — read-only).
+ * Cron job card.
  *
- * Pause/Delete/Run-now used to live here, but the panel runs in a separate
- * container with a read-only mount of OpenClaw — the corresponding API
- * routes 405/501. Re-introduce them once Phase 3 ships a gateway-side
- * control channel.
+ * Pause/Enable/Delete edit `crontab.txt` in place via `lib/cron-edit` and
+ * supercronic reloads on the next fsnotify tick. "Run Now" is intentionally
+ * still missing — that needs a control channel into the gateway container
+ * which is Phase 3.5 scope. Callers omit `onToggle`/`onDelete` to render
+ * the card as read-only.
  */
 
 export interface CronJob {
@@ -35,6 +39,8 @@ export interface CronJob {
 
 interface CronJobCardProps {
   job: CronJob;
+  onToggle?: (id: string, enabled: boolean) => Promise<void>;
+  onDelete?: (id: string) => Promise<void>;
 }
 
 const AGENT_EMOJI: Record<string, string> = {
@@ -47,8 +53,37 @@ const AGENT_EMOJI: Record<string, string> = {
   freelance: "🔧",
 };
 
-export function CronJobCard({ job }: CronJobCardProps) {
+export function CronJobCard({ job, onToggle, onDelete }: CronJobCardProps) {
   const [expanded, setExpanded] = useState(false);
+  const [busy, setBusy] = useState<"toggle" | "delete" | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+
+  const handleToggle = async () => {
+    if (!onToggle || busy) return;
+    setBusy("toggle");
+    try {
+      await onToggle(job.id, !job.enabled);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!onDelete || busy) return;
+    if (!confirmDelete) {
+      setConfirmDelete(true);
+      // Auto-clear the confirm prompt after 4s so a stray click doesn't linger.
+      setTimeout(() => setConfirmDelete(false), 4000);
+      return;
+    }
+    setBusy("delete");
+    try {
+      await onDelete(job.id);
+    } finally {
+      setBusy(null);
+      setConfirmDelete(false);
+    }
+  };
 
   const formatDate = (dateStr: string | null) => {
     if (!dateStr) return "—";
@@ -120,6 +155,34 @@ export function CronJobCard({ job }: CronJobCardProps) {
               {job.description}
             </p>
           </div>
+
+          {/* Pause / Enable */}
+          {onToggle && (
+            <button
+              onClick={handleToggle}
+              disabled={busy !== null}
+              title={job.enabled ? "Pause job" : "Enable job"}
+              className="p-1.5 md:p-2 rounded-lg flex-shrink-0"
+              style={{
+                border: 'none',
+                cursor: busy === "toggle" ? 'not-allowed' : 'pointer',
+                opacity: busy === "toggle" ? 0.5 : 1,
+                backgroundColor: job.enabled
+                  ? 'color-mix(in srgb, var(--success) 20%, transparent)'
+                  : 'rgba(42, 42, 42, 0.5)',
+                color: job.enabled ? 'var(--success)' : 'var(--text-secondary)',
+                transition: 'all 0.2s',
+              }}
+            >
+              {busy === "toggle" ? (
+                <div className="w-4 h-4 md:w-5 md:h-5 border-2 border-current border-t-transparent rounded-full animate-spin" />
+              ) : job.enabled ? (
+                <Pause className="w-4 h-4 md:w-5 md:h-5" />
+              ) : (
+                <Play className="w-4 h-4 md:w-5 md:h-5" />
+              )}
+            </button>
+          )}
         </div>
 
         {/* Schedule Info */}
@@ -196,6 +259,42 @@ export function CronJobCard({ job }: CronJobCardProps) {
               <span style={{ color: 'var(--text-muted)' }}>Timezone: </span>
               <span style={{ color: 'var(--text-secondary)' }}>{job.timezone}</span>
             </div>
+          </div>
+        )}
+
+        {/* Actions: Delete (two-step confirm) */}
+        {onDelete && (
+          <div
+            className="flex items-center gap-2 mt-3 md:mt-4 pt-2 md:pt-4"
+            style={{ borderTop: '1px solid var(--border)' }}
+          >
+            <button
+              onClick={handleDelete}
+              disabled={busy !== null}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs md:text-sm rounded-lg"
+              style={{
+                color: confirmDelete ? 'var(--error)' : 'var(--text-secondary)',
+                background: confirmDelete
+                  ? 'color-mix(in srgb, var(--error) 12%, transparent)'
+                  : 'none',
+                border: confirmDelete
+                  ? '1px solid color-mix(in srgb, var(--error) 30%, transparent)'
+                  : 'none',
+                cursor: busy === 'delete' ? 'not-allowed' : 'pointer',
+                opacity: busy === 'delete' ? 0.5 : 1,
+                transition: 'all 0.2s',
+                fontWeight: confirmDelete ? 600 : 400,
+              }}
+            >
+              {busy === 'delete' ? (
+                <div className="w-3.5 h-3.5 border-2 border-current border-t-transparent rounded-full animate-spin" />
+              ) : (
+                <Trash2 className="w-3.5 h-3.5 md:w-4 md:h-4" />
+              )}
+              <span>
+                {confirmDelete ? 'Click again to confirm' : 'Delete'}
+              </span>
+            </button>
           </div>
         )}
 
