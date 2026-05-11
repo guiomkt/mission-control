@@ -138,6 +138,9 @@ export function FilePreview({ workspace, path, name, onClose }: FilePreviewProps
 
   useEffect(() => {
     if (isImage) {
+      // Image previews don't need a JSON fetch — clear the loading flag
+      // immediately. Single deliberate setState, not a render loop.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setLoading(false);
       return;
     }

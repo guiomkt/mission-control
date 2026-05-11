@@ -212,7 +212,11 @@ function SessionDetail({
 
   useEffect(() => {
     if (!session.sessionId) {
+      // No file to fetch — surface the missing state immediately. The cascade
+      // is a single re-render; the lint rule errs on the side of caution.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setLoading(false);
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setError("No session file available");
       return;
     }

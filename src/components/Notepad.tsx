@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
-import { StickyNote, Save, Trash2 } from "lucide-react";
+import { useState, useEffect, useRef, useCallback } from "react";
+import { StickyNote, Trash2 } from "lucide-react";
 
 const STORAGE_KEY = "tenacitas-notepad";
 
@@ -11,34 +11,41 @@ export function Notepad() {
   const [lastSaved, setLastSaved] = useState<Date | null>(null);
   const saveTimerRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Load from localStorage on mount
+  // Declared before the auto-save effect so it's referenced (not hoisted) when
+  // the effect closes over it. React 19 lint flags TDZ-style usage otherwise.
+  const save = useCallback(() => {
+    const now = new Date();
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ text, ts: now.toISOString() }));
+    setSaved(true);
+    setLastSaved(now);
+  }, [text]);
+
+  // Load from localStorage on mount. The setState cascade only runs once.
   useEffect(() => {
     try {
       const stored = localStorage.getItem(STORAGE_KEY);
       if (stored) {
         const data = JSON.parse(stored);
+        // eslint-disable-next-line react-hooks/set-state-in-effect
         setText(data.text || "");
+        // eslint-disable-next-line react-hooks/set-state-in-effect
         setLastSaved(data.ts ? new Date(data.ts) : null);
       }
     } catch {}
   }, []);
 
-  // Auto-save after 2 seconds of no typing
+  // Auto-save after 2 seconds of no typing. setSaved(false) is a deliberate
+  // synchronous flag flip to drive the "saving..." indicator while the
+  // debounce window is open.
   useEffect(() => {
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setSaved(false);
     saveTimerRef.current = setTimeout(() => {
       save();
     }, 2000);
     return () => { if (saveTimerRef.current) clearTimeout(saveTimerRef.current); };
-  }, [text]);
-
-  const save = () => {
-    const now = new Date();
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ text, ts: now.toISOString() }));
-    setSaved(true);
-    setLastSaved(now);
-  };
+  }, [text, save]);
 
   const clear = () => {
     setText("");

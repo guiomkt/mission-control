@@ -26,14 +26,27 @@ interface FileTreeProps {
   onSelect: (path: string) => void;
 }
 
-const getFileIcon = (name: string) => {
+/**
+ * Render the right icon for a file based on its name. Wrapped as a real
+ * component (vs. a function returning a component type) so that React 19's
+ * react-compiler doesn't complain about creating components during render.
+ */
+function FileIcon({
+  name,
+  className,
+  style,
+}: {
+  name: string;
+  className?: string;
+  style?: React.CSSProperties;
+}) {
   const lower = name.toLowerCase();
-  if (lower === "memory.md") return Brain;
-  if (lower === "soul.md") return Ghost;
-  if (lower === "user.md") return User;
-  if (lower === "agents.md") return BookOpen;
-  return FileText;
-};
+  if (lower === "memory.md") return <Brain className={className} style={style} />;
+  if (lower === "soul.md") return <Ghost className={className} style={style} />;
+  if (lower === "user.md") return <User className={className} style={style} />;
+  if (lower === "agents.md") return <BookOpen className={className} style={style} />;
+  return <FileText className={className} style={style} />;
+}
 
 function TreeNode({
   node,
@@ -58,11 +71,14 @@ function TreeNode({
     }
   };
 
-  const Icon = isFolder
-    ? isExpanded
-      ? FolderOpen
-      : Folder
-    : getFileIcon(node.name);
+  const iconStyle = {
+    color: isFolder
+      ? "#F59E0B"
+      : isSelected
+      ? "var(--text-primary)"
+      : "#60A5FA",
+  };
+  const iconClass = "w-3.5 h-3.5 md:w-4 md:h-4";
 
   return (
     <div>
@@ -97,16 +113,15 @@ function TreeNode({
           </span>
         )}
         {!isFolder && <span className="w-3.5 md:w-4" />}
-        <Icon
-          className="w-3.5 h-3.5 md:w-4 md:h-4"
-          style={{
-            color: isFolder
-              ? "#F59E0B"
-              : isSelected
-              ? "var(--text-primary)"
-              : "#60A5FA",
-          }}
-        />
+        {isFolder ? (
+          isExpanded ? (
+            <FolderOpen className={iconClass} style={iconStyle} />
+          ) : (
+            <Folder className={iconClass} style={iconStyle} />
+          )
+        ) : (
+          <FileIcon name={node.name} className={iconClass} style={iconStyle} />
+        )}
         <span className="truncate">{node.name}</span>
       </button>
 

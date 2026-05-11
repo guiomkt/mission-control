@@ -67,9 +67,11 @@ export function Sidebar() {
     return () => window.removeEventListener("resize", checkMobile);
   }, []);
 
-  // Close sidebar when navigating on mobile
+  // Close sidebar when navigating on mobile. The cascade is intentional and
+  // trivial (one state update per navigation, not per render).
   useEffect(() => {
     if (isMobile) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setIsOpen(false);
     }
   }, [pathname, isMobile]);
