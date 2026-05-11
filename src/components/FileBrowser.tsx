@@ -76,7 +76,10 @@ export function FileBrowser({ workspace, path, onNavigate, viewMode = "list" }: 
   const loadItems = useCallback(() => {
     setLoading(true);
     setError(null);
-    fetch(`/api/files/list?path=${encodeURIComponent(path)}`)
+    const qs = new URLSearchParams();
+    if (workspace) qs.set("workspace", workspace);
+    if (path) qs.set("path", path);
+    fetch(`/api/files/list?${qs.toString()}`)
       .then((res) => {
         if (!res.ok) throw new Error("Failed to load directory");
         return res.json();
@@ -89,7 +92,7 @@ export function FileBrowser({ workspace, path, onNavigate, viewMode = "list" }: 
         setError(err.message);
         setLoading(false);
       });
-  }, [path]);
+  }, [workspace, path]);
 
   useEffect(() => {
     // Triggers `setLoading(true)` + `setError(null)` synchronously inside
@@ -112,7 +115,9 @@ export function FileBrowser({ workspace, path, onNavigate, viewMode = "list" }: 
   const handleDownload = (item: FileEntry, e: React.MouseEvent) => {
     e.stopPropagation();
     const filePath = path ? `${path}/${item.name}` : item.name;
-    const url = `/api/files/download?path=${encodeURIComponent(filePath)}`;
+    const qs = new URLSearchParams({ path: filePath });
+    if (workspace) qs.set("workspace", workspace);
+    const url = `/api/files/download?${qs.toString()}`;
     const a = document.createElement("a");
     a.href = url;
     a.download = item.name;

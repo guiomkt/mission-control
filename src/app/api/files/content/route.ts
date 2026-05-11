@@ -1,19 +1,20 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { promises as fs } from 'fs';
 import path from 'path';
-import { resolveSafe } from '@/lib/paths';
+import { resolveSafe, resolveSafeInWorkspace } from '@/lib/paths';
 
 /**
  * Read file content inline (for the preview modal).
  *
  * GET /api/files/content?path=<relative>
+ * GET /api/files/content?workspace=<id>&path=<relative>
  *   Text-like files → JSON { content, mimeType, size }
  *   Image files    → binary with `Content-Disposition: inline` and the
  *                    correct image MIME (so <img src> works directly).
  *   Other binaries → 415 (use /api/files/download instead).
  *
  * Hardening:
- *  - resolveSafe() rejects traversal + symlink escape
+ *  - resolveSafe / resolveSafeInWorkspace reject traversal + symlink escape
  *  - Sensitive / executable / archive formats blocked
  *  - 1 MB ceiling for text content (avoid OOM on huge logs)
  */
@@ -45,11 +46,15 @@ export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
     const rel = searchParams.get('path') || '';
+    const workspaceId = searchParams.get('workspace');
     if (!rel) {
       return NextResponse.json({ error: 'Missing path' }, { status: 400 });
     }
 
-    const full = resolveSafe('workspace', rel);
+    const full =
+      !workspaceId || workspaceId === 'workspace'
+        ? resolveSafe('workspace', rel)
+        : resolveSafeInWorkspace(workspaceId, rel);
     if (!full) {
       return NextResponse.json({ error: 'Invalid path' }, { status: 403 });
     }
