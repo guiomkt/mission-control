@@ -1,19 +1,26 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { Clock, RefreshCw, AlertCircle, LayoutGrid, CalendarDays, Zap } from "lucide-react";
+import { Clock, RefreshCw, AlertCircle, LayoutGrid, CalendarDays, Info } from "lucide-react";
 import { CronJobCard, type CronJob } from "@/components/CronJobCard";
 import { CronWeeklyTimeline } from "@/components/CronWeeklyTimeline";
 
 type ViewMode = "cards" | "timeline";
 
+/**
+ * Cron page (V1 — read-only).
+ *
+ * The panel sees the OpenClaw `crontab.txt` through a read-only mount, so
+ * pausing/deleting/triggering a job from here is impossible until Phase 3
+ * adds a control channel into the gateway. The card no longer renders those
+ * actions, and the page shows a one-line notice so operators know where to
+ * change schedules.
+ */
 export default function CronJobsPage() {
   const [jobs, setJobs] = useState<CronJob[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>("cards");
-  const [runToast, setRunToast] = useState<{ id: string; status: "success" | "error"; name: string } | null>(null);
 
   const fetchJobs = useCallback(async () => {
     try {
@@ -33,59 +40,6 @@ export default function CronJobsPage() {
     fetchJobs();
   }, [fetchJobs]);
 
-  const handleToggle = async (id: string, enabled: boolean) => {
-    try {
-      const res = await fetch("/api/cron", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id, enabled }),
-      });
-      if (!res.ok) throw new Error("Failed to update job");
-      setJobs((prev) =>
-        prev.map((job) => (job.id === id ? { ...job, enabled } : job))
-      );
-    } catch (err) {
-      console.error("Toggle error:", err);
-      setError("Failed to update job status");
-    }
-  };
-
-  const handleDelete = async (id: string) => {
-    if (deleteConfirm !== id) {
-      setDeleteConfirm(id);
-      return;
-    }
-    try {
-      const res = await fetch(`/api/cron?id=${id}`, { method: "DELETE" });
-      if (!res.ok) throw new Error("Failed to delete job");
-      setJobs((prev) => prev.filter((job) => job.id !== id));
-      setDeleteConfirm(null);
-    } catch (err) {
-      console.error("Delete error:", err);
-      setError("Failed to delete job");
-    }
-  };
-
-  const handleRun = async (id: string) => {
-    const job = jobs.find((j) => j.id === id);
-    const res = await fetch("/api/cron/run", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id }),
-    });
-
-    const data = await res.json();
-
-    if (!res.ok || !data.success) {
-      setRunToast({ id, status: "error", name: job?.name || id });
-      setTimeout(() => setRunToast(null), 4000);
-      throw new Error(data.error || "Trigger failed");
-    }
-
-    setRunToast({ id, status: "success", name: job?.name || id });
-    setTimeout(() => setRunToast(null), 4000);
-  };
-
   const activeJobs = jobs.filter((j) => j.enabled).length;
   const pausedJobs = jobs.length - activeJobs;
 
@@ -102,6 +56,19 @@ export default function CronJobsPage() {
           </h1>
           <p className="text-sm md:text-base" style={{ color: 'var(--text-secondary)' }}>
             Scheduled tasks from OpenClaw Gateway
+          </p>
+          <p
+            style={{
+              marginTop: '0.5rem',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '0.4rem',
+              fontSize: '0.75rem',
+              color: 'var(--text-muted)',
+            }}
+          >
+            <Info className="w-3.5 h-3.5" />
+            Read-only · edit <code style={{ fontFamily: 'monospace' }}>crontab.txt</code> on the gateway to change schedules
           </p>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
@@ -323,84 +290,10 @@ export default function CronJobsPage() {
         /* Cards View */
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 md:gap-4">
           {jobs.map((job) => (
-            <div key={job.id} style={{ position: 'relative' }}>
-              <CronJobCard
-                job={job}
-                onToggle={handleToggle}
-                onEdit={() => {}}
-                onDelete={handleDelete}
-                onRun={handleRun}
-              />
-              {deleteConfirm === job.id && (
-                <div style={{
-                  position: 'absolute', inset: 0,
-                  backgroundColor: 'rgba(12, 12, 12, 0.9)',
-                  borderRadius: '0.75rem',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  backdropFilter: 'blur(4px)',
-                  zIndex: 10,
-                }}>
-                  <div style={{ textAlign: 'center' }}>
-                    <p style={{ color: 'var(--text-primary)', marginBottom: '1rem' }}>Delete &quot;{job.name}&quot;?</p>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                      <button onClick={() => setDeleteConfirm(null)}
-                        style={{ padding: '0.5rem 1rem', color: 'var(--text-secondary)', background: 'none', border: 'none', borderRadius: '0.5rem', cursor: 'pointer' }}>
-                        Cancel
-                      </button>
-                      <button onClick={() => handleDelete(job.id)}
-                        style={{ padding: '0.5rem 1rem', backgroundColor: 'var(--error)', color: 'var(--text-primary)', border: 'none', borderRadius: '0.5rem', cursor: 'pointer' }}>
-                        Delete
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              )}
-            </div>
+            <CronJobCard key={job.id} job={job} />
           ))}
         </div>
       )}
-
-      {/* Run toast notification */}
-      {runToast && (
-        <div
-          style={{
-            position: 'fixed',
-            bottom: '2.5rem',
-            right: '1.5rem',
-            zIndex: 100,
-            display: 'flex',
-            alignItems: 'center',
-            gap: '0.75rem',
-            padding: '0.875rem 1.25rem',
-            borderRadius: '0.75rem',
-            backdropFilter: 'blur(12px)',
-            backgroundColor: runToast.status === "success"
-              ? 'color-mix(in srgb, var(--success) 15%, rgba(12,12,12,0.95))'
-              : 'color-mix(in srgb, var(--error) 15%, rgba(12,12,12,0.95))',
-            border: `1px solid ${runToast.status === "success" ? 'color-mix(in srgb, var(--success) 40%, transparent)' : 'color-mix(in srgb, var(--error) 40%, transparent)'}`,
-            boxShadow: '0 8px 32px rgba(0,0,0,0.4)',
-            color: 'var(--text-primary)',
-            fontSize: '0.875rem',
-            fontWeight: 500,
-            animation: 'slideInRight 0.3s ease',
-          }}
-        >
-          <Zap
-            className="w-4 h-4"
-            style={{ color: runToast.status === "success" ? 'var(--success)' : 'var(--error)' }}
-          />
-          {runToast.status === "success"
-            ? `✓ "${runToast.name}" triggered!`
-            : `✗ Failed to trigger "${runToast.name}"`}
-        </div>
-      )}
-
-      <style jsx global>{`
-        @keyframes slideInRight {
-          from { transform: translateX(2rem); opacity: 0; }
-          to { transform: translateX(0); opacity: 1; }
-        }
-      `}</style>
     </div>
   );
 }
