@@ -40,9 +40,20 @@ export default function RootLayout({
   return (
     <html lang="en" className="dark">
       <head>
-        <script dangerouslySetInnerHTML={{__html:`if("serviceWorker"in navigator)navigator.serviceWorker.register("/sw.js")`}} />
+        {/*
+          We register /sw.js exactly so browsers that still have the old
+          aggressive-caching worker pick up the self-destruct replacement.
+          Once that worker activates it unregisters itself; future loads
+          land with no SW at all. Safe to remove this block once we're
+          sure every operator has refreshed at least once.
+        */}
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `if("serviceWorker"in navigator)navigator.serviceWorker.register("/sw.js")`,
+          }}
+        />
       </head>
-      <body 
+      <body
         className={`${inter.variable} ${sora.variable} ${jetbrainsMono.variable} font-sans`}
         style={{ 
           backgroundColor: 'var(--background)', 
