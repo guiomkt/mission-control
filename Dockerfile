@@ -34,8 +34,9 @@ WORKDIR /app
 
 # libstdc++ for better-sqlite3 at runtime; tini for proper signal handling;
 # wget for the healthcheck (busybox wget is already in -alpine, listing
-# explicitly anyway).
-RUN apk add --no-cache libstdc++ tini wget
+# explicitly anyway); su-exec so the entrypoint can drop privileges to
+# `node` (uid 1000) after fixing volume permissions.
+RUN apk add --no-cache libstdc++ tini wget su-exec
 
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
@@ -53,16 +54,18 @@ COPY --from=builder --chown=node:node /app/.next/standalone ./
 COPY --from=builder --chown=node:node /app/.next/static ./.next/static
 
 # Writable data dir for audit log and any future SQLite files. Compose may
-# replace this with a named volume; the chown survives because the image
-# ships an empty dir owned by the runtime user.
+# replace this with a named volume; the entrypoint re-chowns it on boot
+# so we recover gracefully from a pre-existing volume owned by some other uid.
 RUN mkdir -p /app/data && chown -R node:node /app/data
 
-USER node
+# Entrypoint runs as root, fixes data-dir ownership, then drops to `node`.
+COPY --chmod=755 docker/entrypoint.sh /entrypoint.sh
+
 EXPOSE 3000
 
 # Cheap liveness check; the panel renders /login without auth for unauthenticated requests.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD wget --quiet --tries=1 --spider http://127.0.0.1:3000/login || exit 1
 
-ENTRYPOINT ["/sbin/tini", "--"]
+ENTRYPOINT ["/sbin/tini", "--", "/entrypoint.sh"]
 CMD ["node", "server.js"]

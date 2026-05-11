@@ -1,8 +1,9 @@
 import { NextResponse } from 'next/server';
 import fs from 'fs';
 import path from 'path';
+import { OPENCLAW_WORKSPACE } from '@/lib/paths';
 
-const WORKSPACE = process.env.OPENCLAW_WORKSPACE || '/root/.openclaw/workspace';
+const WORKSPACE = OPENCLAW_WORKSPACE;
 const MEMORY_DIR = path.join(WORKSPACE, 'memory');
 
 interface SearchResult {

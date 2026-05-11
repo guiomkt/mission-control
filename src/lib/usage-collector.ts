@@ -14,12 +14,12 @@ const execAsync = promisify(exec);
 export interface SessionData {
   agentId: string;
   sessionKey: string;
-  sessionId: string;
+  sessionId?: string;
   model: string;
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
-  updatedAt: number;
+  updatedAt?: number;
   percentUsed: number;
 }
 
@@ -36,12 +36,40 @@ export interface UsageSnapshot {
 }
 
 /**
- * Get current OpenClaw status with session data
+ * Get current OpenClaw status with session data.
+ *
+ * The shape mirrors what `openclaw status --json` produced in the upstream
+ * environment. In our deploy we no longer have the CLI on the panel side,
+ * so this function is effectively dead code until Phase 4 brings a control
+ * channel back — but we keep the types accurate for future integration.
  */
-export async function getOpenClawStatus(): Promise<any> {
+interface OpenClawSessionRecord {
+  key: string;
+  sessionId?: string;
+  model?: string;
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  updatedAt?: number;
+  percentUsed?: number;
+}
+
+interface OpenClawAgentGroup {
+  agentId: string;
+  recent?: OpenClawSessionRecord[];
+}
+
+interface OpenClawStatus {
+  sessions?: {
+    byAgent?: OpenClawAgentGroup[];
+  };
+  [k: string]: unknown;
+}
+
+export async function getOpenClawStatus(): Promise<OpenClawStatus> {
   try {
     const { stdout } = await execAsync("openclaw status --json");
-    return JSON.parse(stdout);
+    return JSON.parse(stdout) as OpenClawStatus;
   } catch (error) {
     console.error("Error getting OpenClaw status:", error);
     throw error;
@@ -51,7 +79,7 @@ export async function getOpenClawStatus(): Promise<any> {
 /**
  * Extract session data from status
  */
-export function extractSessionData(status: any): SessionData[] {
+export function extractSessionData(status: OpenClawStatus): SessionData[] {
   const sessions: SessionData[] = [];
 
   if (!status.sessions?.byAgent) {
