@@ -42,21 +42,22 @@ ENV NEXT_TELEMETRY_DISABLED=1
 ENV PORT=3000
 ENV HOSTNAME=0.0.0.0
 
-# Non-root user. UID/GID kept stable so volume permissions are predictable.
-RUN addgroup --system --gid 1001 nodejs \
- && adduser  --system --uid 1001 nextjs
+# Runtime user. We need uid:gid that matches the OpenClaw data volume on the
+# host (owned by `ubuntu` uid=1000 with mode 700). The node:22-alpine image
+# ships a `node` user at uid 1000 / gid 1000, which is exactly what we want.
+# Stick with it to keep volume permissions predictable across hosts.
 
 # Public assets + Next.js' standalone server.
-COPY --from=builder --chown=nextjs:nodejs /app/public ./public
-COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
-COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+COPY --from=builder --chown=node:node /app/public ./public
+COPY --from=builder --chown=node:node /app/.next/standalone ./
+COPY --from=builder --chown=node:node /app/.next/static ./.next/static
 
 # Writable data dir for audit log and any future SQLite files. Compose may
 # replace this with a named volume; the chown survives because the image
 # ships an empty dir owned by the runtime user.
-RUN mkdir -p /app/data && chown -R nextjs:nodejs /app/data
+RUN mkdir -p /app/data && chown -R node:node /app/data
 
-USER nextjs
+USER node
 EXPOSE 3000
 
 # Cheap liveness check; the panel renders /login without auth for unauthenticated requests.
