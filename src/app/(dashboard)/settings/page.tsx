@@ -118,7 +118,7 @@ export default function SettingsPage() {
 
         {/* Quick Actions */}
         <div>
-          <QuickActions onActionComplete={handleRefresh} />
+          <QuickActions />
         </div>
       </div>
 

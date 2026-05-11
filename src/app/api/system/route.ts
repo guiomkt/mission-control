@@ -1,13 +1,16 @@
 import { NextResponse } from 'next/server';
 import fs from 'fs';
-import path from 'path';
 import os from 'os';
 
-import { OPENCLAW_WORKSPACE, WORKSPACE_IDENTITY } from '@/lib/paths';
+import {
+  OPENCLAW_WORKSPACE,
+  OPENCLAW_CONFIG,
+  WORKSPACE_IDENTITY,
+  WORKSPACE_TOOLS,
+} from '@/lib/paths';
 
 const WORKSPACE_PATH = OPENCLAW_WORKSPACE;
 const IDENTITY_PATH = WORKSPACE_IDENTITY;
-const ENV_LOCAL_PATH = path.join(process.cwd(), '.env.local');
 
 function parseIdentityMd(): { name: string; creature: string; emoji: string } {
   try {
@@ -15,7 +18,7 @@ function parseIdentityMd(): { name: string; creature: string; emoji: string } {
     const nameMatch = content.match(/\*\*Name:\*\*\s*(.+)/);
     const creatureMatch = content.match(/\*\*Creature:\*\*\s*(.+)/);
     const emojiMatch = content.match(/\*\*Emoji:\*\*\s*(.+)/);
-    
+
     return {
       name: nameMatch?.[1]?.trim() || 'Unknown',
       creature: creatureMatch?.[1]?.trim() || 'AI Agent',
@@ -26,35 +29,63 @@ function parseIdentityMd(): { name: string; creature: string; emoji: string } {
   }
 }
 
-function getIntegrationStatus() {
-  const integrations = [];
+interface OpenClawConfig {
+  channels?: {
+    telegram?: {
+      enabled?: boolean;
+      accounts?: Record<string, unknown>;
+    };
+  };
+  plugins?: {
+    entries?: Record<string, { enabled?: boolean }>;
+  };
+}
 
-  // Telegram — read from openclaw.json (channels.telegram)
-  let telegramEnabled = false;
-  let telegramAccounts = 0;
+/**
+ * Detect external integration status by inspecting the live OpenClaw config.
+ *
+ * Earlier iterations read from `~/.openclaw/openclaw.json` (the upstream
+ * tenacitOS layout). In our deployment the config lives at
+ * `OPENCLAW_DIR/openclaw.json` (mounted from the host). Probing the wrong
+ * path made everything show "Not Configured" even though Telegram and GOG
+ * are active.
+ */
+function getIntegrationStatus() {
+  let config: OpenClawConfig | null = null;
   try {
-    const openclawConfigPath = path.join(os.homedir(), '.openclaw', 'openclaw.json');
-    const openclawConfig = JSON.parse(fs.readFileSync(openclawConfigPath, 'utf-8'));
-    const telegramConfig = openclawConfig?.channels?.telegram;
-    telegramEnabled = !!(telegramConfig?.enabled);
-    if (telegramConfig?.accounts) {
-      telegramAccounts = Object.keys(telegramConfig.accounts).length;
-    }
-  } catch {}
+    config = JSON.parse(fs.readFileSync(OPENCLAW_CONFIG, 'utf-8')) as OpenClawConfig;
+  } catch {
+    config = null;
+  }
+
+  const integrations: Array<{
+    id: string;
+    name: string;
+    status: 'connected' | 'disconnected' | 'configured' | 'not_configured';
+    icon: string;
+    lastActivity: string | null;
+    detail: string | null;
+  }> = [];
+
+  // Telegram — channels.telegram.enabled + accounts count
+  const telegram = config?.channels?.telegram;
+  const telegramEnabled = !!telegram?.enabled;
+  const telegramAccounts = telegram?.accounts ? Object.keys(telegram.accounts).length : 0;
   integrations.push({
     id: 'telegram',
     name: 'Telegram',
     status: telegramEnabled ? 'connected' : 'disconnected',
     icon: 'MessageCircle',
     lastActivity: telegramEnabled ? new Date().toISOString() : null,
-    detail: telegramEnabled ? `${telegramAccounts} bots configured` : null,
+    detail: telegramEnabled
+      ? `${telegramAccounts} bot${telegramAccounts === 1 ? '' : 's'} configured`
+      : null,
   });
 
-  // Twitter (bird CLI) - check TOOLS.md for configuration
+  // Twitter (bird CLI) — `bird` + `auth_token` mentioned in TOOLS.md
   let twitterConfigured = false;
   try {
-    const toolsPath = path.join(WORKSPACE_PATH, 'TOOLS.md');
-    const toolsContent = fs.readFileSync(toolsPath, 'utf-8');
+    const toolsContent = fs.readFileSync(WORKSPACE_TOOLS, 'utf-8');
     twitterConfigured = toolsContent.includes('bird') && toolsContent.includes('auth_token');
   } catch {}
   integrations.push({
@@ -66,30 +97,16 @@ function getIntegrationStatus() {
     detail: null,
   });
 
-  // Google (gog/google-gemini-cli-auth) — check openclaw.json plugins
-  let googleConfigured = false;
-  let googleDetail: string | null = null;
-  try {
-    const openclawConfigPath = path.join(os.homedir(), '.openclaw', 'openclaw.json');
-    const openclawConfig = JSON.parse(fs.readFileSync(openclawConfigPath, 'utf-8'));
-    const gogPlugin = openclawConfig?.plugins?.entries?.['google-gemini-cli-auth'];
-    googleConfigured = !!(gogPlugin?.enabled);
-    if (googleConfigured) googleDetail = 'google-gemini-cli-auth plugin enabled';
-  } catch {}
-  // Fallback: check for gog config directory
-  if (!googleConfigured) {
-    try {
-      const gogPath = path.join(os.homedir(), '.config', 'gog');
-      googleConfigured = fs.existsSync(gogPath);
-    } catch {}
-  }
+  // Google (GOG / google-gemini-cli-auth) — enabled plugin entry
+  const googlePlugin = config?.plugins?.entries?.['google-gemini-cli-auth'];
+  const googleConfigured = !!googlePlugin?.enabled;
   integrations.push({
     id: 'google',
     name: 'Google (GOG)',
     status: googleConfigured ? 'configured' : 'not_configured',
     icon: 'Mail',
     lastActivity: null,
-    detail: googleDetail,
+    detail: googleConfigured ? 'google-gemini-cli-auth plugin enabled' : null,
   });
 
   return integrations;
@@ -128,50 +145,33 @@ export async function GET() {
   return NextResponse.json(systemInfo);
 }
 
-export async function POST(request: Request) {
-  try {
-    const { action, data } = await request.json();
-    
-    if (action === 'change_password') {
-      const { currentPassword, newPassword } = data;
-      
-      // Read current .env.local
-      let envContent = '';
-      try {
-        envContent = fs.readFileSync(ENV_LOCAL_PATH, 'utf-8');
-      } catch {
-        return NextResponse.json({ error: 'Could not read configuration' }, { status: 500 });
-      }
-      
-      // Verify current password
-      const currentPassMatch = envContent.match(/AUTH_PASSWORD=(.+)/);
-      const storedPassword = currentPassMatch?.[1]?.trim();
-      
-      if (storedPassword !== currentPassword) {
-        return NextResponse.json({ error: 'Current password is incorrect' }, { status: 401 });
-      }
-      
-      // Update password
-      const newEnvContent = envContent.replace(
-        /AUTH_PASSWORD=.*/,
-        `AUTH_PASSWORD=${newPassword}`
-      );
-      
-      fs.writeFileSync(ENV_LOCAL_PATH, newEnvContent);
-      
-      return NextResponse.json({ success: true, message: 'Password updated successfully' });
-    }
-    
-    if (action === 'clear_activity_log') {
-      const activitiesPath = path.join(process.cwd(), 'data', 'activities.json');
-      fs.writeFileSync(activitiesPath, '[]');
-      return NextResponse.json({ success: true, message: 'Activity log cleared' });
-    }
-    
-    return NextResponse.json({ error: 'Unknown action' }, { status: 400 });
-  } catch (error) {
-    return NextResponse.json({ error: 'Action failed' }, { status: 500 });
-  }
+/**
+ * The upstream POST handler did two things that don't apply in V1:
+ *
+ *   - `change_password` rewrote `.env.local` with a new `AUTH_PASSWORD`.
+ *     V1 auth is JWT-based; the credential lives in `ADMIN_PASSWORD` as a
+ *     docker-compose env var, so a file rewrite has no effect after the
+ *     container restarts. Rotation is now a deploy concern.
+ *
+ *   - `clear_activity_log` truncated `data/activities.json`, but V1's
+ *     audit log is in `data/activities.db` (SQLite) and also synthesises
+ *     entries from sessions.json — neither of which a single file truncate
+ *     would touch.
+ *
+ * Both actions are removed from the UI (see components/QuickActions.tsx).
+ * This stub stays so callers that still POST get a clear 410 instead of a
+ * silent broken success.
+ */
+export async function POST() {
+  return NextResponse.json(
+    {
+      error: 'Action removed in V1',
+      detail:
+        'Password rotation and audit truncation are now deploy-side concerns. ' +
+        'See deploy/README.md for the new flow.',
+    },
+    { status: 410 },
+  );
 }
 
 function formatUptime(seconds: number): string {

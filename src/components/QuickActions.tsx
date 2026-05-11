@@ -1,178 +1,82 @@
 "use client";
 
-import { useState } from "react";
-import {
-  RefreshCw,
-  Trash2,
-  FileText,
-  Key,
-  Loader2,
-  CheckCircle,
-  AlertCircle,
-} from "lucide-react";
-import { ChangePasswordModal } from "./ChangePasswordModal";
+import { Info } from "lucide-react";
 
-interface QuickActionsProps {
-  onActionComplete?: () => void;
-}
-
-interface ActionButton {
-  id: string;
-  label: string;
-  icon: React.ComponentType<{ className?: string }>;
-  color: "emerald" | "blue" | "yellow" | "red";
-  action: () => Promise<void> | void;
-  placeholder?: boolean;
-}
-
-export function QuickActions({ onActionComplete }: QuickActionsProps) {
-  const [loadingAction, setLoadingAction] = useState<string | null>(null);
-  const [showPasswordModal, setShowPasswordModal] = useState(false);
-  const [notification, setNotification] = useState<{
-    type: "success" | "error";
-    message: string;
-  } | null>(null);
-
-  const showNotification = (type: "success" | "error", message: string) => {
-    setNotification({ type, message });
-    setTimeout(() => setNotification(null), 3000);
-  };
-
-  const handleRestartGateway = async () => {
-    // Placeholder - would call openclaw gateway restart
-    showNotification("success", "Gateway restart command sent (placeholder)");
-  };
-
-  const handleClearActivityLog = async () => {
-    setLoadingAction("clear_log");
-    try {
-      const res = await fetch("/api/system", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "clear_activity_log" }),
-      });
-
-      if (!res.ok) throw new Error("Failed to clear log");
-
-      showNotification("success", "Activity log cleared successfully");
-      onActionComplete?.();
-    } catch {
-      showNotification("error", "Failed to clear activity log");
-    } finally {
-      setLoadingAction(null);
-    }
-  };
-
-  const handleViewLogs = async () => {
-    // Placeholder - would open gateway logs
-    showNotification("success", "Opening gateway logs... (placeholder)");
-  };
-
-  const actions: ActionButton[] = [
-    {
-      id: "restart",
-      label: "Restart Gateway",
-      icon: RefreshCw,
-      color: "blue",
-      action: handleRestartGateway,
-      placeholder: true,
-    },
-    {
-      id: "clear_log",
-      label: "Clear Activity Log",
-      icon: Trash2,
-      color: "yellow",
-      action: handleClearActivityLog,
-    },
-    {
-      id: "view_logs",
-      label: "View Gateway Logs",
-      icon: FileText,
-      color: "emerald",
-      action: handleViewLogs,
-      placeholder: true,
-    },
-    {
-      id: "change_password",
-      label: "Change Password",
-      icon: Key,
-      color: "red",
-      action: () => setShowPasswordModal(true),
-    },
-  ];
-
-  const colorClasses = {
-    emerald:
-      "bg-emerald-500/10 text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/20",
-    blue: "bg-blue-500/10 text-blue-400 border-blue-500/30 hover:bg-blue-500/20",
-    yellow:
-      "bg-yellow-500/10 text-yellow-400 border-yellow-500/30 hover:bg-yellow-500/20",
-    red: "bg-red-500/10 text-red-400 border-red-500/30 hover:bg-red-500/20",
-  };
-
+/**
+ * Settings → Quick Actions (V1).
+ *
+ * The upstream tenacitOS shipped four actions here. In V1 we run the panel
+ * in its own container with a read-only mount of OpenClaw, and JWT-based
+ * auth driven from `ADMIN_PASSWORD` env vars — so none of the original
+ * buttons did what the label said:
+ *
+ *   - Restart Gateway       → placeholder, never wired up
+ *   - View Gateway Logs     → placeholder, never wired up
+ *   - Clear Activity Log    → wrote to legacy `activities.json`; V1 uses SQLite
+ *   - Change Password       → rewrote `.env.local`; V1 reads ADMIN_PASSWORD
+ *                             from compose env, so the change reverts on
+ *                             the next container restart
+ *
+ * Rather than keep broken buttons around, the V1 surface is honest: no
+ * mutation actions in the panel. Password rotation and gateway restart
+ * are now deploy-side concerns (see `deploy/README.md`); audit truncation
+ * happens by rotating the `mission-control-data` volume.
+ */
+export function QuickActions() {
   return (
-    <>
-      <div className="bg-gray-900 rounded-xl p-6">
-        <h2 className="text-xl font-semibold text-white mb-6 flex items-center gap-2">
-          <RefreshCw className="w-5 h-5 text-emerald-400" />
-          Quick Actions
-        </h2>
+    <div
+      className="rounded-xl p-6"
+      style={{
+        backgroundColor: 'var(--card)',
+        border: '1px solid var(--border)',
+      }}
+    >
+      <h2
+        className="text-xl font-semibold mb-4 flex items-center gap-2"
+        style={{ color: 'var(--text-primary)', fontFamily: 'var(--font-heading)' }}
+      >
+        <Info className="w-5 h-5" style={{ color: 'var(--accent)' }} />
+        Operator Actions
+      </h2>
 
-        {/* Notification */}
-        {notification && (
-          <div
-            className={`flex items-center gap-2 p-3 rounded-lg mb-4 ${
-              notification.type === "success"
-                ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/30"
-                : "bg-red-500/10 text-red-400 border border-red-500/30"
-            }`}
-          >
-            {notification.type === "success" ? (
-              <CheckCircle className="w-4 h-4" />
-            ) : (
-              <AlertCircle className="w-4 h-4" />
-            )}
-            <span className="text-sm">{notification.message}</span>
-          </div>
-        )}
+      <p className="text-sm mb-3" style={{ color: 'var(--text-secondary)' }}>
+        Mission Control runs as a read-only operator panel. State-changing
+        actions live on the host:
+      </p>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          {actions.map((action) => {
-            const Icon = action.icon;
-            const isLoading = loadingAction === action.id;
-
-            return (
-              <button
-                key={action.id}
-                onClick={() => action.action()}
-                disabled={isLoading}
-                className={`flex items-center justify-center gap-2 px-4 py-3 rounded-lg border transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
-                  colorClasses[action.color]
-                }`}
-              >
-                {isLoading ? (
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                ) : (
-                  <Icon className="w-4 h-4" />
-                )}
-                <span className="font-medium">{action.label}</span>
-                {action.placeholder && (
-                  <span className="text-xs opacity-50">(placeholder)</span>
-                )}
-              </button>
-            );
-          })}
-        </div>
-      </div>
-
-      <ChangePasswordModal
-        isOpen={showPasswordModal}
-        onClose={() => setShowPasswordModal(false)}
-        onSuccess={() => {
-          showNotification("success", "Password changed successfully");
-          setShowPasswordModal(false);
-        }}
-      />
-    </>
+      <ul className="space-y-2 text-sm" style={{ color: 'var(--text-secondary)' }}>
+        <li className="flex gap-2">
+          <span style={{ color: 'var(--text-muted)' }}>•</span>
+          <span>
+            <strong style={{ color: 'var(--text-primary)' }}>Restart gateway:</strong>{' '}
+            <code style={{ fontFamily: 'monospace' }}>docker restart openclaw-kozw</code>
+          </span>
+        </li>
+        <li className="flex gap-2">
+          <span style={{ color: 'var(--text-muted)' }}>•</span>
+          <span>
+            <strong style={{ color: 'var(--text-primary)' }}>View gateway logs:</strong>{' '}
+            <code style={{ fontFamily: 'monospace' }}>docker logs -f openclaw-kozw</code>
+          </span>
+        </li>
+        <li className="flex gap-2">
+          <span style={{ color: 'var(--text-muted)' }}>•</span>
+          <span>
+            <strong style={{ color: 'var(--text-primary)' }}>Rotate admin password:</strong>{' '}
+            update <code style={{ fontFamily: 'monospace' }}>ADMIN_PASSWORD</code> in
+            the compose env and{' '}
+            <code style={{ fontFamily: 'monospace' }}>docker compose up -d</code>
+          </span>
+        </li>
+        <li className="flex gap-2">
+          <span style={{ color: 'var(--text-muted)' }}>•</span>
+          <span>
+            <strong style={{ color: 'var(--text-primary)' }}>Truncate audit log:</strong>{' '}
+            rotate the <code style={{ fontFamily: 'monospace' }}>mission-control-data</code>{' '}
+            volume (the SQLite lives there)
+          </span>
+        </li>
+      </ul>
+    </div>
   );
 }
