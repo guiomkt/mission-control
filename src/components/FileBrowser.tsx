@@ -92,6 +92,10 @@ export function FileBrowser({ workspace, path, onNavigate, viewMode = "list" }: 
   }, [path]);
 
   useEffect(() => {
+    // Triggers `setLoading(true)` + `setError(null)` synchronously inside
+    // loadItems. That's a single deliberate cascade per path change, not a
+    // render-loop hazard.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     loadItems();
   }, [loadItems]);
 
