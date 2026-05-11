@@ -1,8 +1,29 @@
 import { NextResponse } from "next/server";
 import { readFileSync, readdirSync, statSync } from "fs";
 import { join } from "path";
+import { OPENCLAW_DIR } from "@/lib/paths";
 
 export const dynamic = "force-dynamic";
+
+interface ConfigAgent {
+  id: string;
+  name?: string;
+  workspace?: string;
+  model?: { primary?: string };
+  subagents?: { allowAgents?: string[] };
+}
+
+interface OpenClawConfig {
+  agents?: {
+    list?: ConfigAgent[];
+    defaults?: { model?: { primary?: string } | string };
+  };
+  channels?: {
+    telegram?: {
+      accounts?: Record<string, { dmPolicy?: string; botToken?: string }>;
+    };
+  };
+}
 
 export async function GET(
   request: Request,
@@ -12,17 +33,18 @@ export async function GET(
     const { id } = await params;
 
     // Read openclaw config
-    const configPath = (process.env.OPENCLAW_DIR || "/root/.openclaw") + "/openclaw.json";
-    const config = JSON.parse(readFileSync(configPath, "utf-8"));
+    const configPath = join(OPENCLAW_DIR, "openclaw.json");
+    const config: OpenClawConfig = JSON.parse(readFileSync(configPath, "utf-8"));
 
     // Find agent
-    const agent = config.agents.list.find((a: any) => a.id === id);
+    const agent = config.agents?.list?.find((a) => a.id === id);
     if (!agent) {
       return NextResponse.json({ error: "Agent not found" }, { status: 404 });
     }
 
     // Get memory files
-    const memoryPath = join(agent.workspace, "memory");
+    const workspace = agent.workspace || join(OPENCLAW_DIR, "workspace");
+    const memoryPath = join(workspace, "memory");
     let recentFiles: Array<{ date: string; size: number; modified: string }> =
       [];
 
@@ -47,17 +69,23 @@ export async function GET(
 
     // Get session info (from OpenClaw API if available)
     // For now, we return mock data
-    const sessions: Array<any> = [];
+    const sessions: Array<unknown> = [];
 
     // Get telegram account info
     const telegramAccount = config.channels?.telegram?.accounts?.[id];
+
+    const defaultsModel = config.agents?.defaults?.model;
+    const fallbackPrimary =
+      typeof defaultsModel === "string"
+        ? defaultsModel
+        : defaultsModel?.primary;
 
     return NextResponse.json({
       agent: {
         id: agent.id,
         name: agent.name,
-        model: agent.model?.primary || config.agents.defaults.model.primary,
-        workspace: agent.workspace,
+        model: agent.model?.primary || fallbackPrimary,
+        workspace,
         dmPolicy: telegramAccount?.dmPolicy,
         allowAgents: agent.subagents?.allowAgents || [],
         telegramConfigured: !!telegramAccount?.botToken,

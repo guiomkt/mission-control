@@ -1,0 +1,54 @@
+# Mission Control — production compose.
+#
+# Deployment layout assumed on the VPS:
+#   /docker/mission-control/        ← this file + .env + the cloned repo
+#   /docker/openclaw-kozw/data/     ← OpenClaw state (mounted read-only)
+#   cloudflared running on the host with token-based config (no compose entry)
+#
+# Bring it up with:
+#   docker compose -f /docker/mission-control/docker-compose.yml up -d --build
+#
+# Notes:
+#  - We bind to 127.0.0.1 only. External access is exclusively via the
+#    cloudflared tunnel + Cloudflare Access policy (mc.2be.com.br).
+#  - The OpenClaw data dir is mounted read-only. The panel never writes there.
+#  - `data/` (audit log etc.) lives in a named volume so it survives image rebuilds.
+
+services:
+  mission-control:
+    build:
+      context: ../mission-control-src
+      dockerfile: Dockerfile
+    image: mission-control:hardening-v1
+    container_name: mission-control
+    init: true
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # Override the in-image defaults to point at the volume mounts.
+      OPENCLAW_DIR: /workspace
+      OPENCLAW_WORKSPACE: /workspace/workspace
+      AUDIT_LOG_PATH: /app/data/audit.log
+      NODE_ENV: production
+    volumes:
+      # Read-only mount of the live OpenClaw state directory. The panel reads
+      # openclaw.json, agents/*/sessions/*.json, crontab.txt from here.
+      - /docker/openclaw-kozw/data/.openclaw:/workspace:ro
+      # Writable space owned by uid 1001 (nextjs user in the image) for the
+      # audit log and any local sqlite the panel produces.
+      - mission-control-data:/app/data
+    ports:
+      # Loopback-only. The cloudflared tunnel on the host points here.
+      - "127.0.0.1:3017:3000"
+    networks:
+      - default
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+volumes:
+  mission-control-data:
+    name: mission-control-data

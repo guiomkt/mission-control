@@ -2,13 +2,16 @@ import { NextRequest, NextResponse } from 'next/server';
 import { promises as fs } from 'fs';
 import path from 'path';
 import { logActivity } from '@/lib/activities-db';
+import { resolveSafe } from '@/lib/paths';
 
-const OPENCLAW_DIR = process.env.OPENCLAW_DIR || '/root/.openclaw';
-
-const WORKSPACE_MAP: Record<string, string> = {
-  workspace: path.join(OPENCLAW_DIR, 'workspace'),
-  'mission-control': path.join(OPENCLAW_DIR, 'workspace', 'mission-control'),
-};
+/**
+ * Download a file from the OpenClaw workspace.
+ *
+ * Hardening (V1):
+ *  - Workspace switching dropped; always resolves under OPENCLAW_WORKSPACE
+ *  - All path inputs go through resolveSafe (rejects traversal + symlink escape)
+ *  - Sensitive / executable / archive formats blocked even within the workspace
+ */
 
 function getMimeType(filename: string): string {
   const ext = path.extname(filename).toLowerCase();
@@ -35,29 +38,40 @@ function getMimeType(filename: string): string {
     '.svg': 'image/svg+xml',
     '.webp': 'image/webp',
     '.pdf': 'application/pdf',
-    '.zip': 'application/zip',
   };
   return mimeMap[ext] || 'application/octet-stream';
 }
 
+const BLOCKED_EXT = new Set([
+  '.env', '.pem', '.key', '.p12', '.pfx',
+  '.exe', '.dll', '.so', '.dylib',
+  '.zip', '.tar', '.gz', '.tgz', '.7z',
+]);
+
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
-    const workspace = searchParams.get('workspace') || 'workspace';
     const filePath = searchParams.get('path') || '';
 
     if (!filePath) {
-      return NextResponse.json({ error: 'Missing path parameter' }, { status: 400 });
+      return NextResponse.json(
+        { error: 'Missing path parameter' },
+        { status: 400 },
+      );
     }
 
-    const base = WORKSPACE_MAP[workspace];
-    if (!base) {
-      return NextResponse.json({ error: 'Unknown workspace' }, { status: 400 });
+    const fullPath = resolveSafe('workspace', filePath);
+    if (!fullPath) {
+      return NextResponse.json({ error: 'Invalid path' }, { status: 403 });
     }
 
-    const fullPath = path.resolve(base, filePath);
-    if (!fullPath.startsWith(base)) {
-      return NextResponse.json({ error: 'Invalid path' }, { status: 400 });
+    const basename = path.basename(fullPath);
+    const ext = path.extname(fullPath).toLowerCase();
+    if (BLOCKED_EXT.has(ext) || basename.startsWith('.env')) {
+      return NextResponse.json(
+        { error: 'File type not downloadable' },
+        { status: 403 },
+      );
     }
 
     const stat = await fs.stat(fullPath);
@@ -66,17 +80,15 @@ export async function GET(request: NextRequest) {
     }
 
     const content = await fs.readFile(fullPath);
-    const filename = path.basename(fullPath);
-    const mimeType = getMimeType(filename);
 
     logActivity('file_read', `Downloaded file: ${filePath}`, 'success', {
-      metadata: { workspace, filePath, size: stat.size },
+      metadata: { filePath, size: stat.size },
     });
 
     return new NextResponse(content, {
       headers: {
-        'Content-Type': mimeType,
-        'Content-Disposition': `attachment; filename="${filename}"`,
+        'Content-Type': getMimeType(basename),
+        'Content-Disposition': `attachment; filename="${basename}"`,
         'Content-Length': stat.size.toString(),
       },
     });

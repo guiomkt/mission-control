@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import { OPENCLAW_DIR } from './paths';
 
 export interface AgentSkillMapping {
   agentId: string;
@@ -8,7 +9,7 @@ export interface AgentSkillMapping {
   skillIds: string[];
 }
 
-const WORKSPACE_AGENTS_DIR = process.env.OPENCLAW_DIR || '/root/.openclaw';
+const WORKSPACE_AGENTS_DIR = OPENCLAW_DIR;
 
 /**
  * Parse AGENTS.md to extract available_skills

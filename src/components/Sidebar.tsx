@@ -20,13 +20,10 @@ import {
   Menu,
   X,
   Users,
-  Gamepad2,
   GitBranch,
   Workflow,
   Zap,
   Server,
-  GitFork,
-  SquareTerminal,
   History,
 } from "lucide-react";
 import { getAgentDisplayName } from "@/config/branding";
@@ -34,12 +31,9 @@ import { getAgentDisplayName } from "@/config/branding";
 const navItems = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
   { href: "/agents", label: "Agents", icon: Users },
-  { href: "/office", label: "🎮 Office", icon: Gamepad2, highlight: true },
   { href: "/actions", label: "Quick Actions", icon: Zap },
   { href: "/system", label: "System", icon: Server },
   { href: "/logs", label: "Live Logs", icon: Terminal },
-  { href: "/terminal", label: "Terminal", icon: SquareTerminal },
-  { href: "/git", label: "Git", icon: GitFork },
   { href: "/workflows", label: "Workflows", icon: Workflow },
   { href: "/activity", label: "Activity", icon: Activity },
   { href: "/memory", label: "Memory", icon: Brain },
@@ -226,16 +220,7 @@ export function Sidebar() {
                     className={`nav-item w-full ${isActive ? "active" : ""}`}
                     style={
                       !isActive
-                        ? {
-                            color: "var(--text-secondary)",
-                            ...(item.highlight
-                              ? {
-                                  background:
-                                    "linear-gradient(135deg, rgba(168, 85, 247, 0.1), rgba(236, 72, 153, 0.1))",
-                                  borderLeft: "3px solid var(--accent)",
-                                }
-                              : {}),
-                          }
+                        ? { color: "var(--text-secondary)" }
                         : {
                             backgroundColor: "var(--accent)",
                             color: "var(--text-primary)",
