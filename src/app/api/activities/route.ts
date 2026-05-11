@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { logActivity, getActivities } from '@/lib/activities-db';
+import { logActivity, getActivities, type Activity } from '@/lib/activities-db';
+import { getOpenClawActivities } from '@/lib/openclaw-activities';
 
 export async function GET(request: NextRequest) {
   try {
@@ -15,12 +16,43 @@ export async function GET(request: NextRequest) {
     const limit = Math.min(parseInt(searchParams.get('limit') || '20'), format === 'csv' ? 10000 : 100);
     const offset = parseInt(searchParams.get('offset') || '0');
 
-    const result = getActivities({ type, status, agent, startDate, endDate, sort, limit, offset });
+    // Two activity sources, merged for the dashboard:
+    //   1. SQLite (panel-side audit: login, download, ...)
+    //   2. OpenClaw sessions (synthesised across agents).
+    // The SQLite alone is empty on a fresh install, which made the panel
+    // look broken; sessions give us the actual agent activity.
+    const pageCeiling = Math.max(limit + offset, 200);
+    const [sqlite, openclaw] = await Promise.all([
+      Promise.resolve(getActivities({
+        type, status, agent, startDate, endDate, sort,
+        limit: pageCeiling, offset: 0,
+      })),
+      getOpenClawActivities({
+        limit: pageCeiling,
+        type,
+        agent,
+        startDate,
+        endDate,
+      }),
+    ]);
 
-    // CSV export
+    const merged: Activity[] = [...sqlite.activities, ...openclaw];
+    const filtered = status && status !== 'all'
+      ? merged.filter((a) => a.status === status)
+      : merged;
+
+    filtered.sort((a, b) =>
+      sort === 'oldest'
+        ? a.timestamp.localeCompare(b.timestamp)
+        : b.timestamp.localeCompare(a.timestamp),
+    );
+
+    const total = filtered.length;
+    const page = filtered.slice(offset, offset + limit);
+
     if (format === 'csv') {
       const header = 'id,timestamp,type,description,status,duration_ms,tokens_used,agent\n';
-      const rows = result.activities.map((a) => [
+      const rows = page.map((a) => [
         a.id, a.timestamp, a.type,
         `"${(a.description || '').replace(/"/g, '""')}"`,
         a.status, a.duration_ms ?? '', a.tokens_used ?? '',
@@ -36,11 +68,11 @@ export async function GET(request: NextRequest) {
     }
 
     return NextResponse.json({
-      activities: result.activities,
-      total: result.total,
+      activities: page,
+      total,
       limit,
       offset,
-      hasMore: offset + limit < result.total,
+      hasMore: offset + limit < total,
     });
   } catch (error) {
     console.error('Failed to get activities:', error);
