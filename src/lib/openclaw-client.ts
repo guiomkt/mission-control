@@ -1,5 +1,6 @@
 import { promises as fs } from 'fs';
 import path from 'path';
+import crypto from 'crypto';
 import { OPENCLAW_DIR, OPENCLAW_WORKSPACE } from './paths';
 
 /**
@@ -69,10 +70,33 @@ export interface SessionSummary {
 }
 
 export interface CronEntry {
+  /** Stable id derived from schedule + command; survives enable/disable toggles. */
+  id: string;
   schedule: string;
   command: string;
   comment?: string;
   enabled: boolean;
+  /** 0-indexed position in crontab.txt — the write helpers use this to edit
+   *  the same line we read. */
+  lineNumber: number;
+}
+
+/**
+ * Deterministic id for a cron entry based purely on schedule + command. We
+ * deliberately ignore enabled/comment so toggling pause/play keeps the id
+ * (and the React key, and the audit-target identifier) stable.
+ *
+ * Collision behaviour: if two lines have the same schedule + command, they
+ * will share an id. Write helpers always operate on the first matching
+ * line; operators can resolve duplicates by editing crontab.txt directly.
+ */
+export function cronEntryId(schedule: string, command: string): string {
+  const hash = crypto
+    .createHash('sha256')
+    .update(`${schedule}|${command}`)
+    .digest('base64url')
+    .slice(0, 16);
+  return `cron-${hash}`;
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -247,7 +271,25 @@ export async function listCrons(): Promise<CronEntry[]> {
 
   const schedRe = /^(\S+\s+\S+\s+\S+\s+\S+\s+\S+)\s+(.+)$/;
 
-  for (const line of lines) {
+  const push = (
+    schedule: string,
+    command: string,
+    enabled: boolean,
+    lineNumber: number,
+  ) => {
+    out.push({
+      id: cronEntryId(schedule, command),
+      schedule,
+      command,
+      comment: pendingComment || undefined,
+      enabled,
+      lineNumber,
+    });
+    pendingComment = '';
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
     const trimmed = line.trim();
     if (!trimmed) {
       pendingComment = '';
@@ -259,13 +301,7 @@ export async function listCrons(): Promise<CronEntry[]> {
       const body = trimmed.replace(/^#\s*/, '');
       const match = body.match(schedRe);
       if (match) {
-        out.push({
-          schedule: match[1],
-          command: match[2],
-          comment: pendingComment || undefined,
-          enabled: false,
-        });
-        pendingComment = '';
+        push(match[1], match[2], false, i);
       } else {
         pendingComment = body;
       }
@@ -274,13 +310,7 @@ export async function listCrons(): Promise<CronEntry[]> {
 
     const match = trimmed.match(schedRe);
     if (match) {
-      out.push({
-        schedule: match[1],
-        command: match[2],
-        comment: pendingComment || undefined,
-        enabled: true,
-      });
-      pendingComment = '';
+      push(match[1], match[2], true, i);
     }
   }
 

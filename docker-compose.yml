@@ -35,6 +35,11 @@ services:
       # Read-only mount of the live OpenClaw state directory. The panel reads
       # openclaw.json, agents/*/sessions/*.json, crontab.txt from here.
       - /docker/openclaw-kozw/data/.openclaw:/workspace:ro
+      # Cron mutations (pause/enable/delete) edit crontab.txt in place via
+      # lib/cron-edit.ts. We override the read-only mount for just that one
+      # file so the rest of /workspace stays immutable from the panel's
+      # perspective. supercronic auto-reloads via fsnotify.
+      - /docker/openclaw-kozw/data/.openclaw/crontab.txt:/workspace/crontab.txt:rw
       # Writable space owned by uid 1001 (nextjs user in the image) for the
       # audit log and any local sqlite the panel produces.
       - mission-control-data:/app/data

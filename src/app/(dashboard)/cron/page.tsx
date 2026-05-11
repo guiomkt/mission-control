@@ -1,20 +1,20 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { Clock, RefreshCw, AlertCircle, LayoutGrid, CalendarDays, Info } from "lucide-react";
+import { Clock, RefreshCw, AlertCircle, LayoutGrid, CalendarDays } from "lucide-react";
 import { CronJobCard, type CronJob } from "@/components/CronJobCard";
 import { CronWeeklyTimeline } from "@/components/CronWeeklyTimeline";
 
 type ViewMode = "cards" | "timeline";
 
 /**
- * Cron page (V1 — read-only).
+ * Cron page.
  *
- * The panel sees the OpenClaw `crontab.txt` through a read-only mount, so
- * pausing/deleting/triggering a job from here is impossible until Phase 3
- * adds a control channel into the gateway. The card no longer renders those
- * actions, and the page shows a one-line notice so operators know where to
- * change schedules.
+ * Pause / Enable / Delete edit `crontab.txt` in place via the V1.1 mutation
+ * API. The crontab file is bind-mounted read-write into the panel
+ * container; supercronic reloads on fsnotify so changes apply within a
+ * second. "Run Now" still needs a gateway-side control channel and isn't
+ * wired here yet.
  */
 export default function CronJobsPage() {
   const [jobs, setJobs] = useState<CronJob[]>([]);
@@ -40,6 +40,48 @@ export default function CronJobsPage() {
     fetchJobs();
   }, [fetchJobs]);
 
+  // Optimistic update + re-fetch on toggle: lets the UI feel instant but
+  // re-syncs against the actual crontab content (in case another operator
+  // edited the file concurrently or we mis-resolved the line).
+  const handleToggle = useCallback(async (id: string, enabled: boolean) => {
+    setJobs((prev) => prev.map((j) => (j.id === id ? { ...j, enabled } : j)));
+    try {
+      const res = await fetch("/api/cron", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, enabled }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body?.error || "Failed to update cron");
+      }
+      // Re-fetch to pick up authoritative state.
+      await fetchJobs();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to update cron");
+      // Roll back optimistic flip on failure.
+      setJobs((prev) => prev.map((j) => (j.id === id ? { ...j, enabled: !enabled } : j)));
+    }
+  }, [fetchJobs]);
+
+  const handleDelete = useCallback(async (id: string) => {
+    const previous = jobs;
+    setJobs((prev) => prev.filter((j) => j.id !== id));
+    try {
+      const res = await fetch(`/api/cron?id=${encodeURIComponent(id)}`, {
+        method: "DELETE",
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body?.error || "Failed to delete cron");
+      }
+      await fetchJobs();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to delete cron");
+      setJobs(previous);
+    }
+  }, [jobs, fetchJobs]);
+
   const activeJobs = jobs.filter((j) => j.enabled).length;
   const pausedJobs = jobs.length - activeJobs;
 
@@ -56,19 +98,6 @@ export default function CronJobsPage() {
           </h1>
           <p className="text-sm md:text-base" style={{ color: 'var(--text-secondary)' }}>
             Scheduled tasks from OpenClaw Gateway
-          </p>
-          <p
-            style={{
-              marginTop: '0.5rem',
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: '0.4rem',
-              fontSize: '0.75rem',
-              color: 'var(--text-muted)',
-            }}
-          >
-            <Info className="w-3.5 h-3.5" />
-            Read-only · edit <code style={{ fontFamily: 'monospace' }}>crontab.txt</code> on the gateway to change schedules
           </p>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
@@ -290,7 +319,12 @@ export default function CronJobsPage() {
         /* Cards View */
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 md:gap-4">
           {jobs.map((job) => (
-            <CronJobCard key={job.id} job={job} />
+            <CronJobCard
+              key={job.id}
+              job={job}
+              onToggle={handleToggle}
+              onDelete={handleDelete}
+            />
           ))}
         </div>
       )}
