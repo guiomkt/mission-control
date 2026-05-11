@@ -225,30 +225,22 @@ function buildAgentSkillMap(): Map<string, string[]> {
 }
 
 /**
- * Load configured skills from config file
- */
-function loadConfiguredSkills(): ConfiguredSkill[] {
-  try {
-    const content = fs.readFileSync(CONFIG_PATH, 'utf-8');
-    const config: SkillsConfig = JSON.parse(content);
-    return config.skills || [];
-  } catch {
-    return [];
-  }
-}
-
-/**
  * Scan all skills in the OpenClaw workspace.
  *
- * Hardened fork no longer depends on `data/configured-skills.json` (which
- * the upstream tenacitOS generated). Instead we enumerate every skill
- * directory under `OPENCLAW_SKILLS_DIR` (the host's `/data/.openclaw/skills/`,
- * mounted at `/workspace/skills` here), plus the per-agent skill dirs that
- * may exist under `<workspace>/workspace-infra/skills/`.
+ * The OpenClaw `skills/` directory uses a mix of two layouts:
+ *
+ *   skills/<skill>/SKILL.md                  ← legacy, single-author bundles
+ *   skills/<author>/<skill>/SKILL.md         ← namespaced (e.g. obra-superpowers)
+ *
+ * We accept both: at each entry we first look for a SKILL.md; if absent, we
+ * descend one level and look inside each subdir. Anything deeper is ignored
+ * (the legacy `references/` and `scripts/` subdirs of a skill mustn't be
+ * mis-classified as nested skills).
  *
  * If `data/configured-skills.json` is present, we still honour it as an
  * allowlist — useful for narrowing the visible set in the UI without
- * changing the volume.
+ * changing the volume. Matches against both the bare name and the
+ * `author/name` namespaced form.
  */
 export function scanAllSkills(): SkillInfo[] {
   const skills: SkillInfo[] = [];
@@ -274,6 +266,19 @@ export function scanAllSkills(): SkillInfo[] {
     // No config — show everything.
   }
 
+  const allow = (id: string, leaf: string) =>
+    !allowlist || allowlist.has(id) || allowlist.has(leaf);
+
+  const pushSkill = (skillPath: string, id: string, leaf: string) => {
+    if (seen.has(id)) return;
+    if (!allow(id, leaf)) return;
+    const skill = parseSkill(skillPath, id, agentSkillMap.get(leaf) || []);
+    if (skill) {
+      skills.push(skill);
+      seen.add(id);
+    }
+  };
+
   for (const { baseDir } of sources) {
     let entries: fs.Dirent[];
     try {
@@ -284,15 +289,26 @@ export function scanAllSkills(): SkillInfo[] {
 
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
-      if (seen.has(entry.name)) continue;
-      if (allowlist && !allowlist.has(entry.name)) continue;
+      const entryPath = path.join(baseDir, entry.name);
 
-      const skillPath = path.join(baseDir, entry.name);
-      const agents = agentSkillMap.get(entry.name) || [];
-      const skill = parseSkill(skillPath, entry.name, agents);
-      if (skill) {
-        skills.push(skill);
-        seen.add(entry.name);
+      // Layout 1: direct skill — SKILL.md sits next to references/scripts.
+      if (fs.existsSync(path.join(entryPath, 'SKILL.md'))) {
+        pushSkill(entryPath, entry.name, entry.name);
+        continue;
+      }
+
+      // Layout 2: author/namespace bundle — descend one level.
+      let subEntries: fs.Dirent[];
+      try {
+        subEntries = fs.readdirSync(entryPath, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+      for (const sub of subEntries) {
+        if (!sub.isDirectory()) continue;
+        const subPath = path.join(entryPath, sub.name);
+        if (!fs.existsSync(path.join(subPath, 'SKILL.md'))) continue;
+        pushSkill(subPath, `${entry.name}/${sub.name}`, sub.name);
       }
     }
   }

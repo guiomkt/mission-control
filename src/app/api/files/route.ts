@@ -1,19 +1,26 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { promises as fs } from 'fs';
 import path from 'path';
-import { OPENCLAW_WORKSPACE, resolveSafe } from '@/lib/paths';
+import {
+  OPENCLAW_WORKSPACE,
+  resolveSafe,
+  resolveSafeInWorkspace,
+  resolveWorkspaceRoot,
+} from '@/lib/paths';
 
 /**
- * Read-only browser for the OpenClaw workspace's curated markdown.
+ * Read-only browser for the OpenClaw workspaces' curated markdown.
  *
- * GET /api/files                  → returns the file tree
- * GET /api/files?path=MEMORY.md   → returns { path, content }
+ * GET /api/files                                → tree for the main workspace
+ * GET /api/files?workspace=workspace-secretary  → tree for that agent's workspace
+ * GET /api/files?path=MEMORY.md                 → { path, content } in main workspace
+ * GET /api/files?workspace=...&path=memory/...  → file in that workspace
  *
  * Hardening (V1):
- *  - PUT removed; mutations no longer go through this endpoint
- *  - Workspace switching removed; always reads OPENCLAW_WORKSPACE
- *  - Path normalization + .md allowlist + memory/* gate
- *  - All concrete fs access funnelled through resolveSafe()
+ *  - Mutations are not exposed here.
+ *  - Workspace ids are validated against a regex allowlist in lib/paths.
+ *  - Path normalization + .md allowlist + memory/* gate.
+ *  - All concrete fs access funnelled through resolveSafe / resolveSafeInWorkspace.
  */
 
 const ROOT_FILES = [
@@ -88,12 +95,47 @@ function isWhitelistedPath(rel: string): boolean {
   return false;
 }
 
+/**
+ * Resolve the workspace root we should serve for this request.
+ * `?workspace=<id>` (validated by lib/paths) → that workspace; otherwise the
+ * default OPENCLAW_WORKSPACE (the main agent).
+ *
+ * Returns `{ root, resolveFile }` so callers can resolve subpaths safely
+ * without duplicating the workspace-vs-default branching.
+ */
+function resolveRequest(workspaceParam: string | null):
+  | { ok: true; root: string; resolveFile: (rel: string) => string | null }
+  | { ok: false; status: number; error: string } {
+  if (!workspaceParam || workspaceParam === 'workspace') {
+    return {
+      ok: true,
+      root: OPENCLAW_WORKSPACE,
+      resolveFile: (rel) => resolveSafe('workspace', rel),
+    };
+  }
+  const root = resolveWorkspaceRoot(workspaceParam);
+  if (!root) {
+    return { ok: false, status: 400, error: 'Invalid workspace' };
+  }
+  return {
+    ok: true,
+    root,
+    resolveFile: (rel) => resolveSafeInWorkspace(workspaceParam, rel),
+  };
+}
+
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
   const filePath = searchParams.get('path');
+  const workspaceParam = searchParams.get('workspace');
 
   try {
-    if (!(await fileExists(OPENCLAW_WORKSPACE))) {
+    const target = resolveRequest(workspaceParam);
+    if (!target.ok) {
+      return NextResponse.json({ error: target.error }, { status: target.status });
+    }
+
+    if (!(await fileExists(target.root))) {
       return NextResponse.json(
         { error: 'Workspace not found' },
         { status: 404 },
@@ -101,7 +143,7 @@ export async function GET(request: NextRequest) {
     }
 
     if (!filePath) {
-      const tree = await getFileTree(OPENCLAW_WORKSPACE);
+      const tree = await getFileTree(target.root);
       return NextResponse.json(tree);
     }
 
@@ -112,7 +154,7 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const fullPath = resolveSafe('workspace', filePath);
+    const fullPath = target.resolveFile(filePath);
     if (!fullPath) {
       return NextResponse.json(
         { error: 'Invalid file path' },
