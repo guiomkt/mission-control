@@ -1,0 +1,25 @@
+node_modules
+.next
+.git
+.env
+.env.local
+.env.*.local
+*.log
+npm-debug.log*
+data/
+.DS_Store
+Thumbs.db
+coverage
+.vscode
+.idea
+
+# Don't ship docs into the image (they're available in the repo).
+docs/
+deploy/
+README.md
+ROADMAP.md
+CONTRIBUTING.md
+SECURITY.md
+
+# Local tmp / test artifacts
+tmp

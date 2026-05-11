@@ -34,6 +34,10 @@ const securityHeaders = [
 ];
 
 const nextConfig = {
+  // Produce a self-contained `.next/standalone/` we can copy into a slim
+  // runtime image (see Dockerfile). Without this, the production image
+  // has to carry `node_modules/` and the full source tree.
+  output: 'standalone',
   allowedDevOrigins: process.env.ALLOWED_DEV_ORIGINS
     ? process.env.ALLOWED_DEV_ORIGINS.split(',')
     : [],
