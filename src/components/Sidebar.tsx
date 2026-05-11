@@ -220,16 +220,7 @@ export function Sidebar() {
                     className={`nav-item w-full ${isActive ? "active" : ""}`}
                     style={
                       !isActive
-                        ? {
-                            color: "var(--text-secondary)",
-                            ...(item.highlight
-                              ? {
-                                  background:
-                                    "linear-gradient(135deg, rgba(168, 85, 247, 0.1), rgba(236, 72, 153, 0.1))",
-                                  borderLeft: "3px solid var(--accent)",
-                                }
-                              : {}),
-                          }
+                        ? { color: "var(--text-secondary)" }
                         : {
                             backgroundColor: "var(--accent)",
                             color: "var(--text-primary)",
