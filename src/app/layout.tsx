@@ -21,12 +21,10 @@ const jetbrainsMono = JetBrains_Mono({
 export const metadata: Metadata = {
   title: "Mission Control - OpenClaw",
   description: "Your OpenClaw agent dashboard",
-  manifest: "/manifest.json",
-  themeColor: "#1a1a2e",
-  appleWebApp: {
-    capable: true,
-    statusBarStyle: "black-translucent",
-  },
+  // Intentionally not exposing a PWA manifest: Cloudflare Access intercepts
+  // the manifest fetch (no cookies on cross-fetch) and redirects to its
+  // login screen, which the page CSP then blocks. Mission Control is an
+  // operator panel, not a PWA — dropping the manifest is the cleaner fix.
   icons: {
     apple: "/apple-touch-icon.png",
   },
