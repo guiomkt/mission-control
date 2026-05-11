@@ -101,3 +101,66 @@ export function resolveSafe(
 export function isPathAllowed(absPath: string): boolean {
   return Object.values(BASES).some((b) => isUnderPrefix(absPath, b));
 }
+
+// ── Workspace switching ─────────────────────────────────────────────────────
+/**
+ * Whitelist regex for workspace ids exposed by /api/files/workspaces.
+ * Matches `workspace` and `workspace-<slug>` (the layout the OpenClaw
+ * container produces under OPENCLAW_DIR). Anything else is rejected so
+ * a user can't enumerate sibling paths via the API.
+ */
+const WORKSPACE_ID_RE = /^workspace(?:-[a-z0-9][a-z0-9_-]*)?$/i;
+
+/**
+ * Resolve a workspace id (e.g. "workspace-copywriter") to its absolute path
+ * under OPENCLAW_DIR, then resolve a relative path under it with the same
+ * traversal + symlink guards as resolveSafe.
+ *
+ * Returns null if the workspace id is malformed, the directory doesn't
+ * exist, or the requested path would escape the workspace root.
+ */
+export function resolveSafeInWorkspace(
+  workspaceId: string,
+  requested: string,
+): string | null {
+  if (!WORKSPACE_ID_RE.test(workspaceId)) return null;
+
+  const workspaceRoot = path.join(OPENCLAW_DIR, workspaceId);
+
+  // Resolve the workspace root itself first (handles symlinks like
+  // `workspace -> ./agents/main/workspace` if the container ever uses them).
+  let realRoot: string;
+  try {
+    realRoot = realpathSync(workspaceRoot);
+  } catch {
+    return null;
+  }
+  if (!isUnderPrefix(realRoot, OPENCLAW_DIR)) return null;
+
+  if (typeof requested !== 'string') return null;
+  if (path.isAbsolute(requested)) return null;
+
+  const joined = path.resolve(realRoot, requested);
+  if (!isUnderPrefix(joined, realRoot)) return null;
+
+  try {
+    const real = realpathSync(joined);
+    if (!isUnderPrefix(real, realRoot)) return null;
+    return real;
+  } catch {
+    return joined;
+  }
+}
+
+/** Absolute root of a workspace id (for non-path operations like listing). */
+export function resolveWorkspaceRoot(workspaceId: string): string | null {
+  if (!WORKSPACE_ID_RE.test(workspaceId)) return null;
+  const workspaceRoot = path.join(OPENCLAW_DIR, workspaceId);
+  try {
+    const real = realpathSync(workspaceRoot);
+    if (!isUnderPrefix(real, OPENCLAW_DIR)) return null;
+    return real;
+  } catch {
+    return null;
+  }
+}

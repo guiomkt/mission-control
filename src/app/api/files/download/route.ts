@@ -2,14 +2,17 @@ import { NextRequest, NextResponse } from 'next/server';
 import { promises as fs } from 'fs';
 import path from 'path';
 import { logActivity } from '@/lib/activities-db';
-import { resolveSafe } from '@/lib/paths';
+import { resolveSafe, resolveSafeInWorkspace } from '@/lib/paths';
 
 /**
  * Download a file from the OpenClaw workspace.
  *
- * Hardening (V1):
- *  - Workspace switching dropped; always resolves under OPENCLAW_WORKSPACE
- *  - All path inputs go through resolveSafe (rejects traversal + symlink escape)
+ * GET /api/files/download?path=<relative>
+ * GET /api/files/download?workspace=<id>&path=<relative>
+ *
+ * Hardening:
+ *  - All path inputs go through resolveSafe / resolveSafeInWorkspace
+ *    (rejects traversal + symlink escape, validates workspace id)
  *  - Sensitive / executable / archive formats blocked even within the workspace
  */
 
@@ -52,6 +55,7 @@ export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
     const filePath = searchParams.get('path') || '';
+    const workspaceId = searchParams.get('workspace');
 
     if (!filePath) {
       return NextResponse.json(
@@ -60,7 +64,10 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const fullPath = resolveSafe('workspace', filePath);
+    const fullPath =
+      !workspaceId || workspaceId === 'workspace'
+        ? resolveSafe('workspace', filePath)
+        : resolveSafeInWorkspace(workspaceId, filePath);
     if (!fullPath) {
       return NextResponse.json({ error: 'Invalid path' }, { status: 403 });
     }

@@ -1,15 +1,24 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { promises as fs } from 'fs';
 import path from 'path';
-import { OPENCLAW_WORKSPACE, resolveSafe } from '@/lib/paths';
+import {
+  OPENCLAW_WORKSPACE,
+  resolveSafe,
+  resolveSafeInWorkspace,
+  resolveWorkspaceRoot,
+} from '@/lib/paths';
 
 /**
- * Read-only directory listing under OPENCLAW_WORKSPACE.
+ * Read-only directory listing across the configured OpenClaw workspaces.
  *
- * GET /api/files/list?path=<relative>  → { items: FileEntry[] }
+ * GET /api/files/list                                → main workspace root
+ * GET /api/files/list?path=memory                    → main workspace subdir
+ * GET /api/files/list?workspace=workspace-copywriter → that agent's workspace root
  *
- * Replaces the removed /api/browse endpoint with a sanitized, workspace-scoped
- * listing. Hidden files (dotfiles) are filtered out. No mutation methods.
+ * Workspace selection: the workspace ID must match the whitelist regex
+ * (workspace, workspace-<slug>). Anything else is rejected with 403.
+ *
+ * Hidden files (dotfiles, _underscore) are filtered out.
  */
 
 interface FileEntry {
@@ -30,15 +39,29 @@ async function fileExists(p: string): Promise<boolean> {
   }
 }
 
+function resolveTarget(workspaceId: string | null, rel: string): string | null {
+  // Default workspace (main) uses the legacy resolveSafe path.
+  if (!workspaceId || workspaceId === 'workspace') {
+    if (!rel) return OPENCLAW_WORKSPACE;
+    return resolveSafe('workspace', rel);
+  }
+  // Named workspace — validate id, resolve, then optionally descend.
+  if (!rel) return resolveWorkspaceRoot(workspaceId);
+  return resolveSafeInWorkspace(workspaceId, rel);
+}
+
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
+    const workspaceId = searchParams.get('workspace');
     const rel = searchParams.get('path') || '';
 
-    // Empty path = workspace root. resolveSafe('workspace', '') returns the base.
-    const dir = rel ? resolveSafe('workspace', rel) : OPENCLAW_WORKSPACE;
+    const dir = resolveTarget(workspaceId, rel);
     if (!dir) {
-      return NextResponse.json({ error: 'Invalid path' }, { status: 403 });
+      return NextResponse.json(
+        { error: 'Invalid workspace or path' },
+        { status: 403 },
+      );
     }
 
     if (!(await fileExists(dir))) {
@@ -57,7 +80,6 @@ export async function GET(request: NextRequest) {
 
     const items: FileEntry[] = [];
     for (const entry of entries) {
-      // Skip hidden and system files
       if (HIDDEN_PREFIXES.some((prefix) => entry.name.startsWith(prefix))) {
         continue;
       }
@@ -70,7 +92,6 @@ export async function GET(request: NextRequest) {
           modified: entryStat.mtime.toISOString(),
         });
       } catch {
-        // Skip entries we can't stat (broken symlinks etc.)
         continue;
       }
     }
