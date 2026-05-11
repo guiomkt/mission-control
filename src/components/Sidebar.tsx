@@ -20,13 +20,10 @@ import {
   Menu,
   X,
   Users,
-  Gamepad2,
   GitBranch,
   Workflow,
   Zap,
   Server,
-  GitFork,
-  SquareTerminal,
   History,
 } from "lucide-react";
 import { getAgentDisplayName } from "@/config/branding";
@@ -34,12 +31,9 @@ import { getAgentDisplayName } from "@/config/branding";
 const navItems = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
   { href: "/agents", label: "Agents", icon: Users },
-  { href: "/office", label: "🎮 Office", icon: Gamepad2, highlight: true },
   { href: "/actions", label: "Quick Actions", icon: Zap },
   { href: "/system", label: "System", icon: Server },
   { href: "/logs", label: "Live Logs", icon: Terminal },
-  { href: "/terminal", label: "Terminal", icon: SquareTerminal },
-  { href: "/git", label: "Git", icon: GitFork },
   { href: "/workflows", label: "Workflows", icon: Workflow },
   { href: "/activity", label: "Activity", icon: Activity },
   { href: "/memory", label: "Memory", icon: Brain },

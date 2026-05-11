@@ -3,7 +3,6 @@
 import { useEffect, useState } from "react";
 import { StatsCard } from "@/components/StatsCard";
 import { ActivityFeed } from "@/components/ActivityFeed";
-import { WeatherWidget } from "@/components/WeatherWidget";
 import { Notepad } from "@/components/Notepad";
 import {
   Activity,
@@ -14,7 +13,6 @@ import {
   Bot,
   MessageSquare,
   Users,
-  Gamepad2,
   Brain,
   Puzzle,
   Zap,
@@ -81,40 +79,32 @@ export default function DashboardPage() {
         </p>
       </div>
 
-      {/* Stats Grid + Weather */}
-      <div className="grid grid-cols-1 lg:grid-cols-4 gap-4 mb-4 md:mb-6">
-        {/* Stats */}
-        <div className="lg:col-span-3 grid grid-cols-2 md:grid-cols-4 gap-3">
-          <StatsCard
-            title="Total Activities"
-            value={stats.total.toLocaleString()}
-            icon={<Activity className="w-5 h-5" />}
-            iconColor="var(--info)"
-          />
-          <StatsCard
-            title="Today"
-            value={stats.today.toLocaleString()}
-            icon={<Zap className="w-5 h-5" />}
-            iconColor="var(--accent)"
-          />
-          <StatsCard
-            title="Successful"
-            value={stats.success.toLocaleString()}
-            icon={<CheckCircle className="w-5 h-5" />}
-            iconColor="var(--success)"
-          />
-          <StatsCard
-            title="Errors"
-            value={stats.error.toLocaleString()}
-            icon={<XCircle className="w-5 h-5" />}
-            iconColor="var(--error)"
-          />
-        </div>
-
-        {/* Weather Widget */}
-        <div className="lg:col-span-1">
-          <WeatherWidget />
-        </div>
+      {/* Stats Grid */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4 md:mb-6">
+        <StatsCard
+          title="Total Activities"
+          value={stats.total.toLocaleString()}
+          icon={<Activity className="w-5 h-5" />}
+          iconColor="var(--info)"
+        />
+        <StatsCard
+          title="Today"
+          value={stats.today.toLocaleString()}
+          icon={<Zap className="w-5 h-5" />}
+          iconColor="var(--accent)"
+        />
+        <StatsCard
+          title="Successful"
+          value={stats.success.toLocaleString()}
+          icon={<CheckCircle className="w-5 h-5" />}
+          iconColor="var(--success)"
+        />
+        <StatsCard
+          title="Errors"
+          value={stats.error.toLocaleString()}
+          icon={<XCircle className="w-5 h-5" />}
+          iconColor="var(--error)"
+        />
       </div>
 
       {/* Multi-Agent Status */}
@@ -143,17 +133,6 @@ export default function DashboardPage() {
             </h2>
           </div>
           <div className="flex gap-2">
-            <Link
-              href="/office"
-              className="text-sm font-medium px-3 py-1.5 rounded-lg transition-all"
-              style={{ 
-                backgroundColor: 'var(--accent)',
-                color: 'var(--text-primary)',
-              }}
-            >
-              <Gamepad2 className="inline-block w-4 h-4 mr-1 mb-0.5" />
-              Open Office
-            </Link>
             <Link
               href="/agents"
               className="text-sm font-medium"
