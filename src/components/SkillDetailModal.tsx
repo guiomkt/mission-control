@@ -3,6 +3,7 @@
 import { X, FolderOpen, ExternalLink, FileText, Puzzle } from "lucide-react";
 import { useEffect, useState } from "react";
 import ReactMarkdown from "react-markdown";
+import rehypeSanitize from "rehype-sanitize";
 
 interface Skill {
   id: string;
@@ -177,7 +178,7 @@ export function SkillDetailModal({ skill, onClose }: SkillDetailModalProps) {
                 "--tw-prose-code": "var(--text-primary)"
               } as React.CSSProperties}
             >
-              <ReactMarkdown>{displayContent}</ReactMarkdown>
+              <ReactMarkdown rehypePlugins={[rehypeSanitize]}>{displayContent}</ReactMarkdown>
             </div>
           )}
 

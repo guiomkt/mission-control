@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { execSync } from "child_process";
+import { auditMutation } from "@/lib/audit-log";
 
 async function createNotification(title: string, message: string, type: "info" | "success" | "warning" | "error" = "info") {
   try {
@@ -40,6 +41,8 @@ export async function POST(request: NextRequest) {
       "success"
     );
 
+    await auditMutation(request, { action: "cron.run", target: id, ok: true });
+
     return NextResponse.json({
       success: true,
       jobId: id,
@@ -48,15 +51,15 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     const message = error instanceof Error ? error.message : "Failed to trigger job";
     console.error("Error triggering cron job:", error);
-    
-    // Create error notification
-    const body = await request.json();
+    await auditMutation(request, { action: "cron.run", ok: false, meta: { error: message } });
+
+    // Create error notification (best-effort; request.json() already consumed above so we skip the cron id here)
     await createNotification(
       "Cron Job Failed",
-      `Failed to execute job "${body.id}": ${message}`,
+      `Failed to execute job: ${message}`,
       "error"
     );
-    
+
     // Even if the command exits with non-zero, the job might have been triggered
     // The openclaw CLI sometimes exits with error but still works
     return NextResponse.json({ success: false, error: message }, { status: 500 });
