@@ -14,11 +14,22 @@ import {
   DollarSign,
   Settings,
   History,
+  Terminal,
+  GitBranch,
+  ScrollText,
 } from "lucide-react";
 
+// Itens do Dock — a navegação que de fato aparece na UI. Sidebar.tsx
+// não é renderizado pelo (dashboard)/layout.tsx, então essa é a fonte
+// única de verdade pras rotas visíveis. Terminal/Git/Logs ficam logo
+// depois do System Monitor pra agrupar tudo relacionado a "inspecionar
+// e operar o host" no topo do dock.
 const dockItems = [
   { href: "/", label: "Dashboard", icon: Home },
   { href: "/system", label: "System Monitor", icon: Monitor },
+  { href: "/terminal", label: "Terminal", icon: Terminal },
+  { href: "/git", label: "Git", icon: GitBranch },
+  { href: "/logs", label: "Live Logs", icon: ScrollText },
   { href: "/files", label: "Files", icon: FolderOpen },
   { href: "/memory", label: "Memory", icon: Brain },
   { href: "/agents", label: "Agents", icon: Bot },
