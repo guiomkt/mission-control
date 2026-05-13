@@ -25,6 +25,7 @@ import {
   Zap,
   Server,
   History,
+  ScrollText,
 } from "lucide-react";
 import { getAgentDisplayName } from "@/config/branding";
 
@@ -33,7 +34,9 @@ const navItems = [
   { href: "/agents", label: "Agents", icon: Users },
   { href: "/actions", label: "Quick Actions", icon: Zap },
   { href: "/system", label: "System", icon: Server },
-  { href: "/logs", label: "Live Logs", icon: Terminal },
+  { href: "/terminal", label: "Terminal", icon: Terminal },
+  { href: "/git", label: "Git", icon: GitBranch },
+  { href: "/logs", label: "Live Logs", icon: ScrollText },
   { href: "/workflows", label: "Workflows", icon: Workflow },
   { href: "/activity", label: "Activity", icon: Activity },
   { href: "/memory", label: "Memory", icon: Brain },
