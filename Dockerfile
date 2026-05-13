@@ -38,8 +38,10 @@ WORKDIR /app
 # is already in -alpine, listing explicitly anyway); su-exec so the
 # entrypoint can drop privileges to `node` (uid 1000) after fixing
 # volume permissions. `libstdc++` was needed for better-sqlite3 in v1 —
-# dropped now that persistence is Supabase.
-RUN apk add --no-cache tini wget su-exec
+# dropped now that persistence is Supabase. `docker-cli` lets /api/logs
+# tail logs from sibling containers (openclaw-kozw) via the docker socket
+# bind-mounted by compose. We don't ship dockerd here — just the client.
+RUN apk add --no-cache tini wget su-exec docker-cli
 
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1

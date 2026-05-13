@@ -43,6 +43,17 @@ services:
       # Writable space owned by uid 1001 (nextjs user in the image) for the
       # audit log and any local sqlite the panel produces.
       - mission-control-data:/app/data
+      # Read-only access to the host's docker socket so /api/logs/stream
+      # can run `docker logs -f openclaw-kozw-openclaw-1`. Read-only:
+      # we never want the panel to be able to start/stop containers — it
+      # only tails their stdout/stderr. The dockerd ACL on the host
+      # further restricts to listening on this socket.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    # GID 988 = `docker` group no host. Adicionamos ao usuário `node`
+    # (uid 1000) que roda o painel pra que ele consiga ler o socket
+    # `srw-rw---- root:docker`. Sem isso dá EACCES no docker logs.
+    group_add:
+      - "988"
     ports:
       # Loopback-only. The cloudflared tunnel on the host points here.
       - "127.0.0.1:3017:3000"
