@@ -151,7 +151,7 @@ export function Sidebar() {
           left: 0,
           top: 0,
           width: "16rem",
-          minHeight: "100vh",
+          height: "100vh",
           display: "flex",
           flexDirection: "column",
           padding: "1rem",
@@ -211,8 +211,13 @@ export function Sidebar() {
           </h1>
         </div>
 
-        {/* Navigation */}
-        <nav className="flex-1 pt-4">
+        {/* Navigation — overflow-y:auto pra evitar que entries adicionais
+            sumam embaixo da viewport em laptops pequenos. Antes era sem
+            scroll, então sidebar com >18 itens cortava as últimas linhas. */}
+        <nav
+          className="flex-1 pt-4"
+          style={{ overflowY: "auto", minHeight: 0 }}
+        >
           <ul className="space-y-0.5">
             {navItems.map((item) => {
               const isActive = pathname === item.href;
