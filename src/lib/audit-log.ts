@@ -1,7 +1,8 @@
-import { promises as fs } from 'fs';
-import path from 'path';
-import type { NextRequest } from 'next/server';
-import { verifySession, SESSION_COOKIE } from '@/lib/session';
+import { promises as fs } from "fs";
+import path from "path";
+import type { NextRequest } from "next/server";
+import { createSupabaseRouteClient } from "@/lib/supabase/server";
+import { NextResponse } from "next/server";
 
 /**
  * Append-only audit log for mutating operations.
@@ -13,11 +14,15 @@ import { verifySession, SESSION_COOKIE } from '@/lib/session';
  *
  * Configure path via AUDIT_LOG_PATH. Default keeps the log inside the app's
  * data dir, which we mount as a writable volume in production.
+ *
+ * The "who" used to be hardcoded as "operator" (single-password flow).
+ * After the Supabase Auth migration we read the user's email out of the
+ * Supabase session — falling back to "anonymous" when there's no session
+ * (e.g. failed login attempts) so we still log the attempt.
  */
 
 const DEFAULT_PATH =
-  process.env.AUDIT_LOG_PATH ||
-  path.join(process.cwd(), 'data', 'audit.log');
+  process.env.AUDIT_LOG_PATH || path.join(process.cwd(), "data", "audit.log");
 
 let initialized = false;
 
@@ -42,26 +47,34 @@ async function writeEntry(entry: AuditEntry): Promise<void> {
       await ensureDir(target);
       initialized = true;
     }
-    await fs.appendFile(target, JSON.stringify(entry) + '\n', 'utf-8');
+    await fs.appendFile(target, JSON.stringify(entry) + "\n", "utf-8");
   } catch (err) {
     // Logging must never break the request path. Surface only to stderr.
-    console.error('[audit] write failed:', err);
+    console.error("[audit] write failed:", err);
   }
 }
 
 function extractIp(request: NextRequest): string {
   return (
-    request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
-    request.headers.get('x-real-ip') ||
-    'unknown'
+    request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
+    request.headers.get("x-real-ip") ||
+    "unknown"
   );
 }
 
 async function extractUser(request: NextRequest): Promise<string> {
-  const token = request.cookies.get(SESSION_COOKIE)?.value;
-  if (!token) return 'anonymous';
-  const claims = await verifySession(token);
-  return claims?.sub ?? 'invalid-session';
+  // We use a throwaway response object because we only want to READ the
+  // session here — the audit log never mutates cookies. `getUser()`
+  // is preferable to `getSession()` because it goes through Supabase's
+  // verification flow rather than trusting the local cookie blindly.
+  try {
+    const throwaway = NextResponse.next();
+    const supabase = createSupabaseRouteClient(request, throwaway);
+    const { data } = await supabase.auth.getUser();
+    return data.user?.email ?? data.user?.id ?? "anonymous";
+  } catch {
+    return "anonymous";
+  }
 }
 
 /**

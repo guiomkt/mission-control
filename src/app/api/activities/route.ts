@@ -22,11 +22,14 @@ export async function GET(request: NextRequest) {
     // The SQLite alone is empty on a fresh install, which made the panel
     // look broken; sessions give us the actual agent activity.
     const pageCeiling = Math.max(limit + offset, 200);
-    const [sqlite, openclaw] = await Promise.all([
-      Promise.resolve(getActivities({
+    // Post-Supabase migration the panel-side audit lives in
+     // `public.activities_v1`; the openclaw side stays on the local
+     // filesystem (sessions.json) so both still need to be merged.
+    const [panel, openclaw] = await Promise.all([
+      getActivities({
         type, status, agent, startDate, endDate, sort,
         limit: pageCeiling, offset: 0,
-      })),
+      }),
       getOpenClawActivities({
         limit: pageCeiling,
         type,
@@ -36,7 +39,7 @@ export async function GET(request: NextRequest) {
       }),
     ]);
 
-    const merged: Activity[] = [...sqlite.activities, ...openclaw];
+    const merged: Activity[] = [...panel.activities, ...openclaw];
     const filtered = status && status !== 'all'
       ? merged.filter((a) => a.status === status)
       : merged;
@@ -99,7 +102,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const activity = logActivity(body.type, body.description, body.status, {
+    const activity = await logActivity(body.type, body.description, body.status, {
       duration_ms: body.duration_ms ?? null,
       tokens_used: body.tokens_used ?? null,
       agent: body.agent ?? null,

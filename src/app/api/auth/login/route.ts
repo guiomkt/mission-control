@@ -1,16 +1,20 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
-import { timingSafeEqual } from "crypto";
-import { issueSession, SESSION_COOKIE, SESSION_MAX_AGE } from "@/lib/session";
+import { createSupabaseRouteClient } from "@/lib/supabase/server";
 import { auditMutation } from "@/lib/audit-log";
 
 /**
- * Login endpoint with rate limit + constant-time password compare.
+ * Login endpoint — email + password against Supabase Auth.
  *
- * V1 hardening:
- *  - Issues a signed JWT (jose) instead of placing AUTH_SECRET in the cookie
- *  - Constant-time compare against ADMIN_PASSWORD (prevents timing oracle)
- *  - Per-IP rate limit kept (5 attempts / 15 min window, 15 min lockout)
+ * Migrated from the v1 "constant-time compare against ADMIN_PASSWORD" flow.
+ * Supabase Auth handles hashing, rate limiting on its side, refresh tokens
+ * and email verification. We keep an extra per-IP throttle here so we don't
+ * hammer Supabase from a single misbehaving client (still useful for
+ * misconfigured automation, not for distributed brute-force).
+ *
+ * Cookies: Supabase writes `sb-<project-ref>-auth-token` (httpOnly,
+ * sameSite=lax). We don't touch them directly — the SDK does it via the
+ * `set` callback we wired up in `createSupabaseRouteClient`.
  */
 
 const MAX_ATTEMPTS = 5;
@@ -71,18 +75,6 @@ function clearAttempts(ip: string): void {
   attempts.delete(ip);
 }
 
-function constantTimeEqual(a: string, b: string): boolean {
-  const ab = Buffer.from(a);
-  const bb = Buffer.from(b);
-  if (ab.length !== bb.length) {
-    // Still do a compare so the timing leaks only length, which the attacker
-    // would learn anyway from an HMAC-truncation oracle.
-    timingSafeEqual(ab, ab);
-    return false;
-  }
-  return timingSafeEqual(ab, bb);
-}
-
 export async function POST(request: NextRequest) {
   const ip = getClientIp(request);
 
@@ -96,36 +88,34 @@ export async function POST(request: NextRequest) {
   }
 
   const body = await request.json().catch(() => ({}));
+  const email = typeof body.email === "string" ? body.email.trim() : "";
   const password = typeof body.password === "string" ? body.password : "";
 
-  const expected = process.env.ADMIN_PASSWORD;
-  if (!expected) {
+  if (!email || !password) {
+    recordFailure(ip);
     return NextResponse.json(
-      { success: false, error: "Server misconfigured (ADMIN_PASSWORD missing)" },
-      { status: 500 },
+      { success: false, error: "Email and password are required" },
+      { status: 400 },
     );
   }
 
-  if (constantTimeEqual(password, expected)) {
-    clearAttempts(ip);
-    const token = await issueSession();
-    const response = NextResponse.json({ success: true });
-    response.cookies.set(SESSION_COOKIE, token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "lax",
-      maxAge: SESSION_MAX_AGE,
-      path: "/",
-    });
-    await auditMutation(request, { action: "login", ok: true });
-    return response;
+  // We create the response up front because the Supabase client writes
+  // the auth cookies into it as a side effect of signInWithPassword.
+  const response = NextResponse.json({ success: true });
+  const supabase = createSupabaseRouteClient(request, response);
+
+  const { error } = await supabase.auth.signInWithPassword({ email, password });
+
+  if (error) {
+    recordFailure(ip);
+    await auditMutation(request, { action: "login", ok: false, meta: { email } });
+    return NextResponse.json(
+      { success: false, error: error.message || "Invalid credentials" },
+      { status: 401 },
+    );
   }
 
-  recordFailure(ip);
-  await auditMutation(request, { action: "login", ok: false });
-
-  return NextResponse.json(
-    { success: false, error: "Invalid password" },
-    { status: 401 },
-  );
+  clearAttempts(ip);
+  await auditMutation(request, { action: "login", ok: true, meta: { email } });
+  return response;
 }

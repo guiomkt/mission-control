@@ -7,14 +7,16 @@
 #   builder  → run `next build` (produces .next/standalone/)
 #   runner   → minimal runtime, runs as non-root, only the standalone tree
 #
-# better-sqlite3 is a native dep; it needs build tools at compile time and
-# libstdc++ at runtime. node:22-alpine + build-base covers both.
+# Persistence is now Supabase (was better-sqlite3 in the v1 image). We can
+# drop the native build toolchain entirely — `@supabase/supabase-js` and
+# `@supabase/ssr` are pure JS — but we keep `libc6-compat` because Next.js'
+# swc binary still needs it on Alpine.
 
 ARG NODE_VERSION=22-alpine
 
 # ── deps ────────────────────────────────────────────────────────────────────
 FROM node:${NODE_VERSION} AS deps
-RUN apk add --no-cache libc6-compat python3 make g++
+RUN apk add --no-cache libc6-compat
 WORKDIR /app
 COPY package.json package-lock.json* ./
 RUN npm ci --no-audit --no-fund
@@ -32,11 +34,12 @@ RUN npm run build
 FROM node:${NODE_VERSION} AS runner
 WORKDIR /app
 
-# libstdc++ for better-sqlite3 at runtime; tini for proper signal handling;
-# wget for the healthcheck (busybox wget is already in -alpine, listing
-# explicitly anyway); su-exec so the entrypoint can drop privileges to
-# `node` (uid 1000) after fixing volume permissions.
-RUN apk add --no-cache libstdc++ tini wget su-exec
+# tini for proper signal handling; wget for the healthcheck (busybox wget
+# is already in -alpine, listing explicitly anyway); su-exec so the
+# entrypoint can drop privileges to `node` (uid 1000) after fixing
+# volume permissions. `libstdc++` was needed for better-sqlite3 in v1 —
+# dropped now that persistence is Supabase.
+RUN apk add --no-cache tini wget su-exec
 
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1

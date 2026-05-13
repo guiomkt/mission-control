@@ -1,16 +1,19 @@
 /**
- * Usage Queries - Read usage data from SQLite
+ * Usage Queries — read aggregated cost/usage data from
+ * `public.usage_snapshots_v1` in Supabase.
+ *
+ * All functions are now async (network call). PostgREST doesn't expose
+ * SUM/GROUP BY in selects, so we pull the row range we need with a
+ * date filter and aggregate in JS. That's fine because the rows-per-day
+ * cardinality is small (per-agent × per-model × 24h = handful of
+ * thousands at most for typical fleets).
+ *
+ * The `Database` parameter from the v1 API is dropped — Supabase
+ * connection comes from the env. Callers that used to thread a Database
+ * handle through their stack just call these helpers directly.
  */
 
-import Database from "better-sqlite3";
-import path from "path";
-import fs from "fs";
-
-const DEFAULT_DB_PATH = path.join(
-  process.cwd(),
-  "data",
-  "usage-tracking.db"
-);
+import { createSupabaseAdminClient } from "@/lib/supabase/server";
 
 export interface CostSummary {
   today: number;
@@ -50,180 +53,189 @@ export interface HourlyCost {
   cost: number;
 }
 
-export function getDatabase(dbPath: string = DEFAULT_DB_PATH): Database.Database | null {
-  if (!fs.existsSync(dbPath)) {
-    console.warn(`Database not found: ${dbPath}`);
-    return null;
-  }
-  return new Database(dbPath, { readonly: true });
-}
+type SnapshotRow = {
+  date: string;
+  hour: number;
+  agent_id: string;
+  model: string;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  cost_usd: number;
+  timestamp_ms: number;
+};
 
 /**
- * Get cost summary (today, yesterday, this month, last month)
+ * Helper: pull all snapshots within a date window (inclusive ends).
+ * 50k cap mirrors what the activities path uses — vastly more than any
+ * realistic single-tenant deploy will produce.
  */
-export function getCostSummary(db: Database.Database): CostSummary {
+async function fetchSnapshots(
+  startDate: string,
+  endDate?: string,
+  startTimestampMs?: number,
+): Promise<SnapshotRow[]> {
+  const supabase = createSupabaseAdminClient();
+  let query = supabase
+    .from("usage_snapshots_v1")
+    .select(
+      "date, hour, agent_id, model, input_tokens, output_tokens, total_tokens, cost_usd, timestamp_ms",
+    )
+    .gte("date", startDate)
+    .limit(50_000);
+  if (endDate) query = query.lte("date", endDate);
+  if (startTimestampMs !== undefined) {
+    query = query.gte("timestamp_ms", startTimestampMs);
+  }
+  const { data, error } = await query;
+  if (error) {
+    console.error("[usage-queries] select failed:", error.message);
+    return [];
+  }
+  return (data ?? []) as SnapshotRow[];
+}
+
+function sumCost(rows: SnapshotRow[]): number {
+  return rows.reduce((acc, r) => acc + Number(r.cost_usd ?? 0), 0);
+}
+
+export async function getCostSummary(): Promise<CostSummary> {
   const now = new Date();
   const today = now.toISOString().split("T")[0];
-  
   const yesterday = new Date(now);
   yesterday.setDate(yesterday.getDate() - 1);
   const yesterdayStr = yesterday.toISOString().split("T")[0];
-  
-  const thisMonthStart = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01`;
-  
+
+  const thisMonthStart = `${now.getFullYear()}-${String(
+    now.getMonth() + 1,
+  ).padStart(2, "0")}-01`;
   const lastMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
   const lastMonthEnd = new Date(now.getFullYear(), now.getMonth(), 0);
   const lastMonthStartStr = lastMonthStart.toISOString().split("T")[0];
   const lastMonthEndStr = lastMonthEnd.toISOString().split("T")[0];
 
-  // Today's cost
-  const todayResult = db.prepare(`
-    SELECT COALESCE(SUM(cost), 0) as total FROM usage_snapshots WHERE date = ?
-  `).get(today) as { total: number };
+  // Single pull for both months' window — cheaper than four round-trips.
+  const earliest = lastMonthStartStr;
+  const rows = await fetchSnapshots(earliest);
 
-  // Yesterday's cost
-  const yesterdayResult = db.prepare(`
-    SELECT COALESCE(SUM(cost), 0) as total FROM usage_snapshots WHERE date = ?
-  `).get(yesterdayStr) as { total: number };
+  const todayRows = rows.filter((r) => r.date === today);
+  const yRows = rows.filter((r) => r.date === yesterdayStr);
+  const thisMonthRows = rows.filter((r) => r.date >= thisMonthStart);
+  const lastMonthRows = rows.filter(
+    (r) => r.date >= lastMonthStartStr && r.date <= lastMonthEndStr,
+  );
 
-  // This month's cost
-  const thisMonthResult = db.prepare(`
-    SELECT COALESCE(SUM(cost), 0) as total FROM usage_snapshots WHERE date >= ?
-  `).get(thisMonthStart) as { total: number };
-
-  // Last month's cost
-  const lastMonthResult = db.prepare(`
-    SELECT COALESCE(SUM(cost), 0) as total FROM usage_snapshots WHERE date >= ? AND date <= ?
-  `).get(lastMonthStartStr, lastMonthEndStr) as { total: number };
-
-  // Calculate projection (based on average daily spend this month)
+  const thisMonthTotal = sumCost(thisMonthRows);
   const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
   const daysElapsed = now.getDate();
-  const avgDailySpend = daysElapsed > 0 ? thisMonthResult.total / daysElapsed : 0;
+  const avgDailySpend = daysElapsed > 0 ? thisMonthTotal / daysElapsed : 0;
   const projected = avgDailySpend * daysInMonth;
 
   return {
-    today: todayResult.total,
-    yesterday: yesterdayResult.total,
-    thisMonth: thisMonthResult.total,
-    lastMonth: lastMonthResult.total,
+    today: sumCost(todayRows),
+    yesterday: sumCost(yRows),
+    thisMonth: thisMonthTotal,
+    lastMonth: sumCost(lastMonthRows),
     projected,
   };
 }
 
-/**
- * Get cost breakdown by agent
- */
-export function getCostByAgent(db: Database.Database, days: number = 30): AgentCost[] {
-  const cutoffDate = new Date();
-  cutoffDate.setDate(cutoffDate.getDate() - days);
-  const cutoffStr = cutoffDate.toISOString().split("T")[0];
-
-  const results = db.prepare(`
-    SELECT 
-      agent_id as agent,
-      SUM(cost) as cost,
-      SUM(total_tokens) as tokens,
-      SUM(input_tokens) as inputTokens,
-      SUM(output_tokens) as outputTokens
-    FROM usage_snapshots
-    WHERE date >= ?
-    GROUP BY agent_id
-    ORDER BY cost DESC
-  `).all(cutoffStr) as AgentCost[];
-
-  const total = results.reduce((sum, r) => sum + r.cost, 0);
-
-  return results.map((r) => ({
-    ...r,
-    percentOfTotal: total > 0 ? (r.cost / total) * 100 : 0,
-  }));
+function withCutoff(days: number): string {
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - days);
+  return cutoff.toISOString().split("T")[0];
 }
 
-/**
- * Get cost breakdown by model
- */
-export function getCostByModel(db: Database.Database, days: number = 30): ModelCost[] {
-  const cutoffDate = new Date();
-  cutoffDate.setDate(cutoffDate.getDate() - days);
-  const cutoffStr = cutoffDate.toISOString().split("T")[0];
+export async function getCostByAgent(days: number = 30): Promise<AgentCost[]> {
+  const rows = await fetchSnapshots(withCutoff(days));
+  const grouped = new Map<
+    string,
+    { cost: number; tokens: number; inputTokens: number; outputTokens: number }
+  >();
+  for (const r of rows) {
+    const cur = grouped.get(r.agent_id) ?? {
+      cost: 0,
+      tokens: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+    };
+    cur.cost += Number(r.cost_usd ?? 0);
+    cur.tokens += r.total_tokens ?? 0;
+    cur.inputTokens += r.input_tokens ?? 0;
+    cur.outputTokens += r.output_tokens ?? 0;
+    grouped.set(r.agent_id, cur);
+  }
+  const total = [...grouped.values()].reduce((a, b) => a + b.cost, 0);
+  return [...grouped.entries()]
+    .map(([agent, v]) => ({
+      agent,
+      ...v,
+      percentOfTotal: total > 0 ? (v.cost / total) * 100 : 0,
+    }))
+    .sort((a, b) => b.cost - a.cost);
+}
 
-  const results = db.prepare(`
-    SELECT 
+export async function getCostByModel(days: number = 30): Promise<ModelCost[]> {
+  const rows = await fetchSnapshots(withCutoff(days));
+  const grouped = new Map<
+    string,
+    { cost: number; tokens: number; inputTokens: number; outputTokens: number }
+  >();
+  for (const r of rows) {
+    const cur = grouped.get(r.model) ?? {
+      cost: 0,
+      tokens: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+    };
+    cur.cost += Number(r.cost_usd ?? 0);
+    cur.tokens += r.total_tokens ?? 0;
+    cur.inputTokens += r.input_tokens ?? 0;
+    cur.outputTokens += r.output_tokens ?? 0;
+    grouped.set(r.model, cur);
+  }
+  const total = [...grouped.values()].reduce((a, b) => a + b.cost, 0);
+  return [...grouped.entries()]
+    .map(([model, v]) => ({
       model,
-      SUM(cost) as cost,
-      SUM(total_tokens) as tokens,
-      SUM(input_tokens) as inputTokens,
-      SUM(output_tokens) as outputTokens
-    FROM usage_snapshots
-    WHERE date >= ?
-    GROUP BY model
-    ORDER BY cost DESC
-  `).all(cutoffStr) as ModelCost[];
-
-  const total = results.reduce((sum, r) => sum + r.cost, 0);
-
-  return results.map((r) => ({
-    ...r,
-    percentOfTotal: total > 0 ? (r.cost / total) * 100 : 0,
-  }));
+      ...v,
+      percentOfTotal: total > 0 ? (v.cost / total) * 100 : 0,
+    }))
+    .sort((a, b) => b.cost - a.cost);
 }
 
-/**
- * Get daily cost trend
- */
-export function getDailyCost(db: Database.Database, days: number = 30): DailyCost[] {
-  const cutoffDate = new Date();
-  cutoffDate.setDate(cutoffDate.getDate() - days);
-  const cutoffStr = cutoffDate.toISOString().split("T")[0];
-
-  const results = db.prepare(`
-    SELECT 
-      date,
-      SUM(cost) as cost,
-      SUM(input_tokens) as input,
-      SUM(output_tokens) as output
-    FROM usage_snapshots
-    WHERE date >= ?
-    GROUP BY date
-    ORDER BY date ASC
-  `).all(cutoffStr) as Array<{
-    date: string;
-    cost: number;
-    input: number;
-    output: number;
-  }>;
-
-  // Format date as MM-DD
-  return results.map((r) => ({
-    date: r.date.slice(5), // YYYY-MM-DD → MM-DD
-    cost: parseFloat(r.cost.toFixed(2)),
-    input: r.input,
-    output: r.output,
-  }));
+export async function getDailyCost(days: number = 30): Promise<DailyCost[]> {
+  const rows = await fetchSnapshots(withCutoff(days));
+  const grouped = new Map<string, { cost: number; input: number; output: number }>();
+  for (const r of rows) {
+    const cur = grouped.get(r.date) ?? { cost: 0, input: 0, output: 0 };
+    cur.cost += Number(r.cost_usd ?? 0);
+    cur.input += r.input_tokens ?? 0;
+    cur.output += r.output_tokens ?? 0;
+    grouped.set(r.date, cur);
+  }
+  return [...grouped.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([date, v]) => ({
+      date: date.slice(5), // YYYY-MM-DD → MM-DD
+      cost: parseFloat(v.cost.toFixed(2)),
+      input: v.input,
+      output: v.output,
+    }));
 }
 
-/**
- * Get hourly cost trend (last 24h)
- */
-export function getHourlyCost(db: Database.Database): HourlyCost[] {
-  const cutoffTimestamp = Date.now() - 24 * 60 * 60 * 1000; // 24h ago
-
-  const results = db.prepare(`
-    SELECT 
-      hour,
-      SUM(cost) as cost
-    FROM usage_snapshots
-    WHERE timestamp >= ?
-    GROUP BY hour
-    ORDER BY hour ASC
-  `).all(cutoffTimestamp) as Array<{
-    hour: number;
-    cost: number;
-  }>;
-
-  return results.map((r) => ({
-    hour: `${String(r.hour).padStart(2, "0")}:00`,
-    cost: parseFloat(r.cost.toFixed(2)),
-  }));
+export async function getHourlyCost(): Promise<HourlyCost[]> {
+  const cutoffMs = Date.now() - 24 * 60 * 60 * 1000;
+  const cutoffDate = new Date(cutoffMs).toISOString().split("T")[0];
+  const rows = await fetchSnapshots(cutoffDate, undefined, cutoffMs);
+  const grouped = new Map<number, number>();
+  for (const r of rows) {
+    grouped.set(r.hour, (grouped.get(r.hour) ?? 0) + Number(r.cost_usd ?? 0));
+  }
+  return [...grouped.entries()]
+    .sort(([a], [b]) => a - b)
+    .map(([hour, cost]) => ({
+      hour: `${String(hour).padStart(2, "0")}:00`,
+      cost: parseFloat(cost.toFixed(2)),
+    }));
 }

@@ -1,36 +1,47 @@
-import { NextResponse } from "next/server";
-import type { NextRequest } from "next/server";
-import { verifySession, SESSION_COOKIE } from "@/lib/session";
+/**
+ * Mission Control v1 — Next.js middleware (Supabase Auth).
+ *
+ * Replaces the previous "verify our own HMAC-signed JWT cookie" flow
+ * with Supabase Auth. The middleware does three things on every request:
+ *
+ *   1. Forwards `sb-*` session cookies through `updateSupabaseSession`,
+ *      which automatically refreshes expired access tokens (writing
+ *      Set-Cookie headers back when it does).
+ *   2. Whitelists the public routes (`/login`, `/auth/*`, `/api/auth/*`,
+ *      `/api/health`) so the panel can serve them without auth.
+ *   3. Redirects unauthenticated requests to `/login?from=<original>`,
+ *      or returns a 401 JSON body for `/api/*` routes (so fetch callers
+ *      don't get HTML).
+ */
+import { NextResponse, type NextRequest } from "next/server";
+import { updateSupabaseSession } from "@/lib/supabase/middleware";
 
-// Routes that never require authentication
-const PUBLIC_ROUTES = new Set(["/login"]);
-
-// API routes that are always public (auth endpoints + health check)
+const PUBLIC_PATHS = new Set([
+  "/login",
+  "/auth/callback",
+  "/auth/reset",
+  "/forgot-password",
+]);
 const PUBLIC_API_PREFIXES = ["/api/auth/", "/api/health"];
 
-async function isAuthenticated(request: NextRequest): Promise<boolean> {
-  const token = request.cookies.get(SESSION_COOKIE)?.value;
-  if (!token) return false;
-  const claims = await verifySession(token);
-  return claims !== null;
+function isPublicPath(pathname: string): boolean {
+  if (PUBLIC_PATHS.has(pathname)) return true;
+  return PUBLIC_API_PREFIXES.some((prefix) => pathname.startsWith(prefix));
 }
 
 export async function middleware(request: NextRequest) {
+  const { response, supabaseUser } = await updateSupabaseSession(request);
   const { pathname } = request.nextUrl;
 
-  if (PUBLIC_ROUTES.has(pathname)) {
-    return NextResponse.next();
+  if (isPublicPath(pathname)) {
+    return response;
   }
 
-  if (PUBLIC_API_PREFIXES.some((prefix) => pathname.startsWith(prefix))) {
-    return NextResponse.next();
-  }
-
-  if (!(await isAuthenticated(request))) {
+  if (!supabaseUser) {
     if (pathname.startsWith("/api/")) {
       return NextResponse.json(
         { error: "Unauthorized", message: "Authentication required" },
-        { status: 401 }
+        { status: 401 },
       );
     }
     const loginUrl = new URL("/login", request.url);
@@ -38,17 +49,16 @@ export async function middleware(request: NextRequest) {
     return NextResponse.redirect(loginUrl);
   }
 
-  return NextResponse.next();
+  return response;
 }
 
 export const config = {
   matcher: [
     /*
-     * Match all request paths except:
-     * - _next/static (static files)
-     * - _next/image (image optimization files)
-     * - favicon.ico (favicon file)
-     * - public files (with extension)
+     * Match every path except static assets and files with extensions.
+     * We need middleware to run on every page so Supabase can refresh
+     * tokens even on routes that don't otherwise care about auth.
      */
-    "/((?!_next/static|_next/image|favicon.ico|.*\\..*).*)"],
+    "/((?!_next/static|_next/image|favicon.ico|.*\\..*).*)",
+  ],
 };

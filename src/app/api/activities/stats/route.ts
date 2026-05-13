@@ -2,68 +2,93 @@
  * Activity Stats API
  * GET /api/activities/stats
  *
- * Returns the dashboard's headline numbers plus heatmap/trend/hourly arrays.
- * Aggregates two sources:
+ * Returns the dashboard's headline numbers plus heatmap/trend/hourly
+ * arrays. Aggregates two sources:
  *
- *   1. SQLite (panel's own audit) — getActivityStats() + ad-hoc heatmap queries
- *   2. OpenClaw sessions — derived view via getOpenClawActivityStats()
+ *   1. Panel-side audit — `public.activities_v1` in Supabase
+ *      (was SQLite in v1).
+ *   2. OpenClaw sessions — derived view via getOpenClawActivityStats().
  *
- * A fresh deploy has an empty SQLite, which would leave the dashboard at
- * zero on every card. Merging the OpenClaw source restores meaningful
- * counts (sessions per agent, today's runs, weekly trend, etc.).
+ * A fresh deploy has an empty panel-side audit, which would leave the
+ * dashboard at zero on every card. Merging the OpenClaw source restores
+ * meaningful counts (sessions per agent, today's runs, weekly trend …).
  */
-import { NextResponse } from 'next/server';
-import { getActivityStats } from '@/lib/activities-db';
-import { getOpenClawActivityStats } from '@/lib/openclaw-activities';
-import Database from 'better-sqlite3';
-import path from 'path';
-import fs from 'fs';
+import { NextResponse } from "next/server";
+import { getActivityStats } from "@/lib/activities-db";
+import { getOpenClawActivityStats } from "@/lib/openclaw-activities";
+import { createSupabaseAdminClient } from "@/lib/supabase/server";
 
 type DailyRow = { day: string; count: number };
 type TrendRow = { day: string; count: number; success: number; errors: number };
 type HourRow = { hour: string; count: number };
 
-function readSqliteSeries(): { heatmap: DailyRow[]; trend: TrendRow[]; hourly: HourRow[] } {
-  const DB_PATH = path.join(process.cwd(), 'data', 'activities.db');
-  // SQLite file may not exist on first boot; skip gracefully.
-  if (!fs.existsSync(DB_PATH)) {
+/**
+ * Aggregate the panel-side series (heatmap/trend/hourly) out of
+ * `activities_v1`. PostgREST doesn't expose `GROUP BY` directly, so
+ * we pull the raw rows (with a time-window filter that keeps the
+ * result tractable) and aggregate in JS. For the 1-year heatmap we
+ * cap at 50k rows, which is ample for typical use.
+ */
+async function readPanelSeries(): Promise<{
+  heatmap: DailyRow[];
+  trend: TrendRow[];
+  hourly: HourRow[];
+}> {
+  const supabase = createSupabaseAdminClient();
+  const oneYearAgo = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString();
+  const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+  const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+
+  const { data, error } = await supabase
+    .from("activities_v1")
+    .select("timestamp, status")
+    .gte("timestamp", oneYearAgo)
+    .limit(50_000);
+
+  if (error || !data) {
+    if (error) console.error("[activities/stats] supabase select failed:", error.message);
     return { heatmap: [], trend: [], hourly: [] };
   }
 
-  const db = new Database(DB_PATH);
-  try {
-    const cutoff = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString();
-    const heatmap = db.prepare(`
-      SELECT DATE(timestamp) as day, COUNT(*) as count
-      FROM activities
-      WHERE timestamp >= ?
-      GROUP BY DATE(timestamp)
-      ORDER BY day
-    `).all(cutoff) as DailyRow[];
+  const heatmapMap = new Map<string, number>();
+  const trendMap = new Map<
+    string,
+    { count: number; success: number; errors: number }
+  >();
+  const hourlyMap = new Map<string, number>();
 
-    const trend = db.prepare(`
-      SELECT DATE(timestamp) as day, COUNT(*) as count,
-             SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success,
-             SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as errors
-      FROM activities
-      WHERE timestamp >= datetime('now', '-7 days')
-      GROUP BY DATE(timestamp)
-      ORDER BY day DESC
-    `).all() as TrendRow[];
+  for (const row of data as Array<{ timestamp: string; status: string }>) {
+    const ts = new Date(row.timestamp);
+    if (Number.isNaN(ts.getTime())) continue;
+    const dayKey = ts.toISOString().slice(0, 10);
+    heatmapMap.set(dayKey, (heatmapMap.get(dayKey) ?? 0) + 1);
 
-    const hourly = db.prepare(`
-      SELECT strftime('%H', timestamp) as hour, COUNT(*) as count
-      FROM activities
-      WHERE timestamp >= datetime('now', '-30 days')
-      GROUP BY hour
-      ORDER BY count DESC
-      LIMIT 24
-    `).all() as HourRow[];
+    if (row.timestamp >= sevenDaysAgo) {
+      const cur = trendMap.get(dayKey) ?? { count: 0, success: 0, errors: 0 };
+      cur.count += 1;
+      if (row.status === "success") cur.success += 1;
+      if (row.status === "error") cur.errors += 1;
+      trendMap.set(dayKey, cur);
+    }
 
-    return { heatmap, trend, hourly };
-  } finally {
-    db.close();
+    if (row.timestamp >= thirtyDaysAgo) {
+      const hour = String(ts.getUTCHours()).padStart(2, "0");
+      hourlyMap.set(hour, (hourlyMap.get(hour) ?? 0) + 1);
+    }
   }
+
+  return {
+    heatmap: [...heatmapMap.entries()]
+      .map(([day, count]) => ({ day, count }))
+      .sort((a, b) => a.day.localeCompare(b.day)),
+    trend: [...trendMap.entries()]
+      .map(([day, v]) => ({ day, ...v }))
+      .sort((a, b) => b.day.localeCompare(a.day)),
+    hourly: [...hourlyMap.entries()]
+      .map(([hour, count]) => ({ hour, count }))
+      .sort((a, b) => Number(b.count) - Number(a.count))
+      .slice(0, 24),
+  };
 }
 
 function mergeByKey<T extends Record<string, number | string>>(
@@ -93,29 +118,39 @@ function mergeByKey<T extends Record<string, number | string>>(
 
 export async function GET() {
   try {
-    const [sqliteBase, sqliteSeries, openclaw] = await Promise.all([
-      Promise.resolve(getActivityStats()),
-      Promise.resolve(readSqliteSeries()),
+    const [panelBase, panelSeries, openclaw] = await Promise.all([
+      getActivityStats(),
+      readPanelSeries(),
       getOpenClawActivityStats(),
     ]);
 
-    // Sum scalars across both sources.
-    const total = sqliteBase.total + openclaw.total;
-    const today = sqliteBase.today + openclaw.today;
+    const total = panelBase.total + openclaw.total;
+    const today = panelBase.today + openclaw.today;
 
-    const byType: Record<string, number> = { ...sqliteBase.byType };
-    for (const [k, v] of Object.entries(openclaw.byType)) byType[k] = (byType[k] ?? 0) + v;
+    const byType: Record<string, number> = { ...panelBase.byType };
+    for (const [k, v] of Object.entries(openclaw.byType))
+      byType[k] = (byType[k] ?? 0) + v;
 
-    const byStatus: Record<string, number> = { ...sqliteBase.byStatus };
-    for (const [k, v] of Object.entries(openclaw.byStatus)) byStatus[k] = (byStatus[k] ?? 0) + v;
+    const byStatus: Record<string, number> = { ...panelBase.byStatus };
+    for (const [k, v] of Object.entries(openclaw.byStatus))
+      byStatus[k] = (byStatus[k] ?? 0) + v;
 
-    const heatmap = mergeByKey(sqliteSeries.heatmap, openclaw.heatmap, 'day', ['count'])
-      .sort((a, b) => a.day.localeCompare(b.day));
+    const heatmap = mergeByKey(
+      panelSeries.heatmap,
+      openclaw.heatmap,
+      "day",
+      ["count"],
+    ).sort((a, b) => a.day.localeCompare(b.day));
 
-    const trend = mergeByKey(sqliteSeries.trend, openclaw.trend, 'day', ['count', 'success', 'errors'])
-      .sort((a, b) => b.day.localeCompare(a.day));
+    const trend = mergeByKey(panelSeries.trend, openclaw.trend, "day", [
+      "count",
+      "success",
+      "errors",
+    ]).sort((a, b) => b.day.localeCompare(a.day));
 
-    const hourly = mergeByKey(sqliteSeries.hourly, openclaw.hourly, 'hour', ['count']);
+    const hourly = mergeByKey(panelSeries.hourly, openclaw.hourly, "hour", [
+      "count",
+    ]);
     hourly.sort((a, b) => Number(b.count) - Number(a.count));
 
     return NextResponse.json({
@@ -128,7 +163,7 @@ export async function GET() {
       hourly,
     });
   } catch (error) {
-    console.error('[activities/stats] Error:', error);
-    return NextResponse.json({ error: 'Failed to get stats' }, { status: 500 });
+    console.error("[activities/stats] Error:", error);
+    return NextResponse.json({ error: "Failed to get stats" }, { status: 500 });
   }
 }

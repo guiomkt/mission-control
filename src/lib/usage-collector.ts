@@ -1,13 +1,21 @@
 /**
- * Usage Collector - Reads OpenClaw session data and calculates costs
+ * Usage Collector — reads OpenClaw session data and records cost
+ * snapshots into Supabase (`public.usage_snapshots_v1`).
+ *
+ * Replaces the previous SQLite-backed implementation. The interface
+ * stays the same for callers: `collectUsage(...)` runs the full
+ * pipeline; `calculateSnapshot(...)` is still pure-functional and used
+ * by routes that want to display "current" costs without persisting.
+ *
+ * `dbPath` arguments from the v1 SQLite API are kept on `collectUsage`
+ * for backwards compat with cron callers, but ignored — Supabase
+ * connection comes from the env.
  */
 
 import { exec } from "child_process";
 import { promisify } from "util";
 import { calculateCost, normalizeModelId } from "./pricing";
-import Database from "better-sqlite3";
-import path from "path";
-import fs from "fs";
+import { createSupabaseAdminClient } from "@/lib/supabase/server";
 
 const execAsync = promisify(exec);
 
@@ -35,14 +43,6 @@ export interface UsageSnapshot {
   cost: number;
 }
 
-/**
- * Get current OpenClaw status with session data.
- *
- * The shape mirrors what `openclaw status --json` produced in the upstream
- * environment. In our deploy we no longer have the CLI on the panel side,
- * so this function is effectively dead code until Phase 4 brings a control
- * channel back — but we keep the types accurate for future integration.
- */
 interface OpenClawSessionRecord {
   key: string;
   sessionId?: string;
@@ -76,19 +76,13 @@ export async function getOpenClawStatus(): Promise<OpenClawStatus> {
   }
 }
 
-/**
- * Extract session data from status
- */
+/** Extract session data from OpenClaw status payload. */
 export function extractSessionData(status: OpenClawStatus): SessionData[] {
   const sessions: SessionData[] = [];
-
-  if (!status.sessions?.byAgent) {
-    return sessions;
-  }
+  if (!status.sessions?.byAgent) return sessions;
 
   for (const agentGroup of status.sessions.byAgent) {
     const agentId = agentGroup.agentId;
-
     for (const session of agentGroup.recent || []) {
       sessions.push({
         agentId,
@@ -103,41 +97,32 @@ export function extractSessionData(status: OpenClawStatus): SessionData[] {
       });
     }
   }
-
   return sessions;
 }
 
-/**
- * Calculate cost snapshot from session data
- */
+/** Pure: turn session totals into cost snapshots bucketed by agent/model. */
 export function calculateSnapshot(
   sessions: SessionData[],
-  timestamp: number
+  timestamp: number,
 ): UsageSnapshot[] {
   const snapshots: UsageSnapshot[] = [];
   const date = new Date(timestamp);
   const dateStr = date.toISOString().split("T")[0]; // YYYY-MM-DD
   const hour = date.getUTCHours();
 
-  // Group by agent and model
   const grouped = new Map<string, SessionData[]>();
-
   for (const session of sessions) {
     const key = `${session.agentId}:${session.model}`;
-    if (!grouped.has(key)) {
-      grouped.set(key, []);
-    }
+    if (!grouped.has(key)) grouped.set(key, []);
     grouped.get(key)!.push(session);
   }
 
-  // Calculate totals and costs
   for (const [key, group] of grouped.entries()) {
     const [agentId, model] = key.split(":");
     const inputTokens = group.reduce((sum, s) => sum + s.inputTokens, 0);
     const outputTokens = group.reduce((sum, s) => sum + s.outputTokens, 0);
     const totalTokens = group.reduce((sum, s) => sum + s.totalTokens, 0);
     const cost = calculateCost(model, inputTokens, outputTokens);
-
     snapshots.push({
       timestamp,
       date: dateStr,
@@ -150,104 +135,54 @@ export function calculateSnapshot(
       cost,
     });
   }
-
   return snapshots;
 }
 
 /**
- * Initialize SQLite database for usage tracking
+ * Persist a snapshot into `usage_snapshots_v1`. Uses upsert on the
+ * (agent_id, model, date, hour) unique index so re-running the
+ * collector inside the same hour just refreshes the totals — same
+ * idempotency the v1 SQLite path provided with its DELETE + INSERT.
  */
-export function initDatabase(dbPath: string): Database.Database {
-  // Ensure directory exists
-  const dir = path.dirname(dbPath);
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
+export async function saveSnapshot(snapshot: UsageSnapshot): Promise<void> {
+  const supabase = createSupabaseAdminClient();
+  const row = {
+    timestamp_ms: snapshot.timestamp,
+    date: snapshot.date,
+    hour: snapshot.hour,
+    agent_id: snapshot.agentId,
+    model: snapshot.model,
+    input_tokens: snapshot.inputTokens,
+    output_tokens: snapshot.outputTokens,
+    total_tokens: snapshot.totalTokens,
+    cost_usd: snapshot.cost,
+  };
+  const { error } = await supabase
+    .from("usage_snapshots_v1")
+    .upsert(row, { onConflict: "agent_id,model,date,hour" });
+  if (error) {
+    console.error("[usage-collector] upsert failed:", error.message);
   }
-
-  const db = new Database(dbPath);
-
-  // Create table if not exists
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS usage_snapshots (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      timestamp INTEGER NOT NULL,
-      date TEXT NOT NULL,
-      hour INTEGER NOT NULL,
-      agent_id TEXT NOT NULL,
-      model TEXT NOT NULL,
-      input_tokens INTEGER NOT NULL,
-      output_tokens INTEGER NOT NULL,
-      total_tokens INTEGER NOT NULL,
-      cost REAL NOT NULL,
-      created_at INTEGER DEFAULT (strftime('%s', 'now'))
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_date ON usage_snapshots(date);
-    CREATE INDEX IF NOT EXISTS idx_agent ON usage_snapshots(agent_id);
-    CREATE INDEX IF NOT EXISTS idx_model ON usage_snapshots(model);
-    CREATE INDEX IF NOT EXISTS idx_timestamp ON usage_snapshots(timestamp);
-  `);
-
-  return db;
 }
 
 /**
- * Save snapshot to database
+ * Capture a point-in-time snapshot of session totals and persist it.
+ * The `dbPath` argument is preserved for the cron caller's existing
+ * signature but ignored — Supabase replaces the SQLite file.
  */
-export function saveSnapshot(
-  db: Database.Database,
-  snapshot: UsageSnapshot
-): void {
-  const stmt = db.prepare(`
-    INSERT INTO usage_snapshots 
-      (timestamp, date, hour, agent_id, model, input_tokens, output_tokens, total_tokens, cost)
-    VALUES 
-      (?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `);
+export async function collectUsage(_dbPath?: string): Promise<void> {
+  const status = await getOpenClawStatus();
+  const sessions = extractSessionData(status);
+  const timestamp = Date.now();
+  const snapshots = calculateSnapshot(sessions, timestamp);
 
-  stmt.run(
-    snapshot.timestamp,
-    snapshot.date,
-    snapshot.hour,
-    snapshot.agentId,
-    snapshot.model,
-    snapshot.inputTokens,
-    snapshot.outputTokens,
-    snapshot.totalTokens,
-    snapshot.cost
+  for (const snapshot of snapshots) {
+    await saveSnapshot(snapshot);
+  }
+
+  const date = new Date(timestamp).toISOString().split("T")[0];
+  const hour = new Date(timestamp).getUTCHours();
+  console.log(
+    `Collected ${snapshots.length} usage snapshots for ${date} ${hour}:00 UTC`,
   );
-}
-
-/**
- * Collect and save current usage data
- * This captures a point-in-time snapshot of current session totals
- */
-export async function collectUsage(dbPath: string): Promise<void> {
-  const db = initDatabase(dbPath);
-
-  try {
-    // Get current status
-    const status = await getOpenClawStatus();
-    const sessions = extractSessionData(status);
-    const timestamp = Date.now();
-    const snapshots = calculateSnapshot(sessions, timestamp);
-
-    // Delete any snapshots from the same hour (avoid duplicates)
-    const hour = new Date(timestamp).getUTCHours();
-    const date = new Date(timestamp).toISOString().split("T")[0];
-    
-    db.prepare(`
-      DELETE FROM usage_snapshots 
-      WHERE date = ? AND hour = ?
-    `).run(date, hour);
-
-    // Save new snapshots
-    for (const snapshot of snapshots) {
-      saveSnapshot(db, snapshot);
-    }
-
-    console.log(`Collected ${snapshots.length} usage snapshots for ${date} ${hour}:00 UTC`);
-  } finally {
-    db.close();
-  }
 }

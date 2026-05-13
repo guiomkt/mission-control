@@ -1,78 +1,101 @@
 /**
- * Real-time activity stream via SSE
+ * Real-time activity stream via SSE.
  * GET /api/activities/stream
- * Sends new activities as they arrive (polling SQLite every 2 seconds)
+ *
+ * Replaces v1's 2s SQLite polling with a Supabase Realtime subscription
+ * to `public.activities_v1`. The server subscribes to INSERT events on
+ * that table once per connection and forwards each new row to the
+ * client through Server-Sent Events. Closing the SSE channel (browser
+ * navigate away, tab close, abort signal) tears the Realtime channel
+ * down so we don't leak subscriptions on the Supabase side.
+ *
+ * First-frame: we pull the latest 5 activities so the panel renders
+ * immediately instead of waiting for the next INSERT.
  */
-import { NextRequest } from 'next/server';
-import { getActivities } from '@/lib/activities-db';
+import { NextRequest } from "next/server";
+import { getActivities } from "@/lib/activities-db";
+import { createSupabaseAdminClient } from "@/lib/supabase/server";
 
 export async function GET(request: NextRequest) {
   const encoder = new TextEncoder();
-  let lastId: string | null = null;
   let closed = false;
+  let unsubscribe: (() => Promise<void>) | null = null;
 
   const stream = new ReadableStream({
-    start(controller) {
+    async start(controller) {
       const send = (data: unknown) => {
         try {
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
-        } catch {}
-      };
-
-      // Send initial ping
-      send({ type: 'connected', ts: new Date().toISOString() });
-
-      const poll = async () => {
-        if (closed) return;
-
-        try {
-          const result = getActivities({ limit: 10, sort: 'newest' });
-          const activities = result.activities;
-
-          if (activities.length > 0) {
-            const newest = activities[0];
-
-            if (lastId === null) {
-              // First run: send a batch of recent activities
-              send({ type: 'batch', activities: activities.slice(0, 5) });
-              lastId = newest.id;
-            } else if (newest.id !== lastId) {
-              // New activities since last check
-              const newActivities = activities.filter((a) => {
-                // Send activities newer than lastId
-                const lastIdx = activities.findIndex((x) => x.id === lastId);
-                if (lastIdx === -1) return true;
-                return activities.indexOf(a) < lastIdx;
-              });
-
-              for (const activity of newActivities.reverse()) {
-                send({ type: 'new', activity });
-              }
-              lastId = newest.id;
-            }
-          }
-        } catch {}
-
-        if (!closed) {
-          setTimeout(poll, 2000);
+          controller.enqueue(
+            encoder.encode(`data: ${JSON.stringify(data)}\n\n`),
+          );
+        } catch {
+          // Stream was closed under us — ignore.
         }
       };
 
-      poll();
+      send({ type: "connected", ts: new Date().toISOString() });
 
-      request.signal?.addEventListener('abort', () => {
+      // Initial backfill so the UI isn't blank on connect.
+      try {
+        const result = await getActivities({ limit: 5, sort: "newest" });
+        if (result.activities.length > 0) {
+          send({ type: "batch", activities: result.activities });
+        }
+      } catch (err) {
+        console.error("[activities/stream] initial fetch failed:", err);
+      }
+
+      // Realtime subscription. Note: we use the admin client because the
+      // panel server is trusted; the SSE response itself is gated by the
+      // middleware (Supabase Auth) so the operator's authorization is
+      // already verified by the time we get here.
+      const supabase = createSupabaseAdminClient();
+      const channel = supabase
+        .channel(`activities_v1_stream_${Math.random().toString(36).slice(2)}`)
+        .on(
+          "postgres_changes",
+          { event: "INSERT", schema: "public", table: "activities_v1" },
+          (payload) => {
+            if (closed) return;
+            send({ type: "new", activity: payload.new });
+          },
+        )
+        .subscribe((status) => {
+          if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
+            console.warn(`[activities/stream] realtime status=${status}`);
+          }
+        });
+
+      unsubscribe = async () => {
+        try {
+          await supabase.removeChannel(channel);
+        } catch (err) {
+          console.error("[activities/stream] removeChannel failed:", err);
+        }
+      };
+
+      request.signal?.addEventListener("abort", async () => {
         closed = true;
-        try { controller.close(); } catch {}
+        if (unsubscribe) await unsubscribe();
+        try {
+          controller.close();
+        } catch {
+          // ignore double-close
+        }
       });
+    },
+    async cancel() {
+      closed = true;
+      if (unsubscribe) await unsubscribe();
     },
   });
 
   return new Response(stream, {
     headers: {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      'Connection': 'keep-alive',
-      'X-Accel-Buffering': 'no',
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+      "X-Accel-Buffering": "no",
     },
   });
 }

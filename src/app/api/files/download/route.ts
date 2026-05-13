@@ -88,9 +88,11 @@ export async function GET(request: NextRequest) {
 
     const content = await fs.readFile(fullPath);
 
+    // Fire-and-forget: the activity log is best-effort and we don't want to
+    // block the file download on a Supabase round-trip.
     logActivity('file_read', `Downloaded file: ${filePath}`, 'success', {
       metadata: { filePath, size: stat.size },
-    });
+    }).catch((err) => console.error('[files/download] audit failed:', err));
 
     return new NextResponse(content, {
       headers: {

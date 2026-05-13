@@ -1,25 +1,17 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
-import { revokeSession, verifySession, SESSION_COOKIE } from "@/lib/session";
+import { createSupabaseRouteClient } from "@/lib/supabase/server";
 import { auditMutation } from "@/lib/audit-log";
 
+/**
+ * Sign out — Supabase Auth invalidates the session server-side and the
+ * SDK clears the cookies via the response's `set` callbacks. We still
+ * call this from the Sidebar's logout button.
+ */
 export async function POST(request: NextRequest) {
-  // Revoke the JWT's jti so the token can't be reused even if the cookie leaks.
-  const token = request.cookies.get(SESSION_COOKIE)?.value;
-  if (token) {
-    const claims = await verifySession(token);
-    if (claims?.jti) revokeSession(claims.jti);
-  }
-
-  await auditMutation(request, { action: "logout", ok: true });
-
   const response = NextResponse.json({ success: true });
-  response.cookies.set(SESSION_COOKIE, "", {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "lax",
-    maxAge: 0,
-    path: "/",
-  });
+  const supabase = createSupabaseRouteClient(request, response);
+  await supabase.auth.signOut();
+  await auditMutation(request, { action: "logout", ok: true });
   return response;
 }
