@@ -21,6 +21,10 @@ import {
   ProviderKeyModal,
   type ProviderModalSpec,
 } from "@/components/ProviderKeyModal";
+import {
+  OAuthProfilesTable,
+  type OAuthProvider,
+} from "@/components/OAuthProfilesTable";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 
 // ── Tipos do /api/openclaw/status ────────────────────────────────────────
@@ -83,11 +87,24 @@ interface ProvidersResponse {
   providers: ProviderEntry[];
 }
 
+interface OAuthProfilesResponse {
+  providers: OAuthProvider[];
+  otherProfiles?: Array<{
+    key: string;
+    providerId: string;
+    type: string;
+    health: string;
+    daysRemaining: number | null;
+    expiresAt?: string;
+  }>;
+}
+
 export default function SettingsPage() {
   const [systemData, setSystemData] = useState<SystemData | null>(null);
   const [status, setStatus] = useState<OpenClawStatus | null>(null);
   const [plugins, setPlugins] = useState<PluginsResponse | null>(null);
   const [providers, setProviders] = useState<ProviderEntry[] | null>(null);
+  const [oauthProfiles, setOauthProfiles] = useState<OAuthProfilesResponse | null>(null);
   const [userEmail, setUserEmail] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
@@ -105,11 +122,12 @@ export default function SettingsPage() {
   const refresh = useCallback(async () => {
     setError(null);
     try {
-      const [sysRes, stRes, plRes, prRes] = await Promise.all([
+      const [sysRes, stRes, plRes, prRes, oaRes] = await Promise.all([
         fetch("/api/system", { cache: "no-store" }),
         fetch("/api/openclaw/status", { cache: "no-store" }),
         fetch("/api/openclaw/plugins", { cache: "no-store" }),
         fetch("/api/openclaw/providers", { cache: "no-store" }),
+        fetch("/api/openclaw/oauth/profiles", { cache: "no-store" }),
       ]);
       if (sysRes.ok) setSystemData(await sysRes.json());
       if (stRes.ok) {
@@ -124,6 +142,10 @@ export default function SettingsPage() {
       if (prRes.ok) {
         const data = (await prRes.json()) as ProvidersResponse;
         setProviders(data.providers);
+      }
+      if (oaRes.ok) {
+        const data = (await oaRes.json()) as OAuthProfilesResponse;
+        setOauthProfiles(data);
       }
       setLastRefresh(new Date());
     } catch (err) {
@@ -229,6 +251,16 @@ export default function SettingsPage() {
   const telegramAccounts = status?.channelAccounts?.telegram ?? [];
   const whatsappAccounts = status?.channelAccounts?.whatsapp ?? [];
 
+  // OAuth profiles que merecem alerta no topo: expiring-urgent, expired,
+  // ou cooldown ativo. Banner amarelo/vermelho conforme severidade.
+  const urgentOAuth = (oauthProfiles?.providers ?? []).flatMap((p) =>
+    p.profiles
+      .filter((prof) =>
+        ["expiring-urgent", "expired", "cooldown"].includes(prof.health),
+      )
+      .map((prof) => ({ provider: p, profile: prof })),
+  );
+
   // Detecta canais quebrados pra mostrar banner no topo. Considera unhealthy
   // qualquer conta configurada que não está conectada (running && connected).
   const brokenChannels: Array<{ kind: "telegram" | "whatsapp"; account: string; lastError?: string | null }> =
@@ -298,6 +330,40 @@ export default function SettingsPage() {
         >
           <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
           <span>{error}</span>
+        </div>
+      )}
+
+      {urgentOAuth.length > 0 && (
+        <div
+          className="mb-4 px-4 py-3 rounded-lg flex items-start gap-3 text-sm"
+          style={{
+            backgroundColor: "var(--warning-bg, rgba(255,149,0,0.08))",
+            color: "var(--warning, #FF9500)",
+            border: "1px solid var(--warning, #FF9500)",
+          }}
+        >
+          <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+          <div className="flex-1 min-w-0">
+            <p className="font-semibold mb-1">
+              {urgentOAuth.length === 1
+                ? "1 conta de assinatura precisa de atenção"
+                : `${urgentOAuth.length} contas de assinatura precisam de atenção`}
+            </p>
+            <ul className="space-y-1 text-xs opacity-90">
+              {urgentOAuth.map(({ provider, profile }) => (
+                <li key={`${provider.id}/${profile.key}`}>
+                  <span className="font-mono">{provider.label}</span>
+                  {" — "}
+                  {profile.health === "expired"
+                    ? "expirado"
+                    : profile.health === "cooldown"
+                      ? `cooldown (${profile.daysRemaining}d)`
+                      : `expira em ${profile.daysRemaining}d`}
+                  {" — veja seção “Contas conectadas” abaixo pro comando de reconect."}
+                </li>
+              ))}
+            </ul>
+          </div>
         </div>
       )}
 
@@ -469,7 +535,20 @@ export default function SettingsPage() {
         </p>
       </Section>
 
-      <Section title="Provedores de IA">
+      <Section title="Contas conectadas (Assinatura / OAuth)">
+        <OAuthProfilesTable
+          providers={oauthProfiles?.providers ?? null}
+          otherProfiles={oauthProfiles?.otherProfiles}
+        />
+        <p className="text-xs mt-2" style={{ color: "var(--text-muted)" }}>
+          Essas contas usam o login da assinatura (Claude Pro/Max, ChatGPT
+          Plus, Gemini Advanced, Kimi/Moonshot Pro) em vez de cobrança por
+          token. A reconexão hoje é via SSH — o fluxo direto no painel
+          fica pra Phase 2 (o CLI da OpenClaw exige TTY).
+        </p>
+      </Section>
+
+      <Section title="API Keys (pay-per-token)">
         <ProvidersTable
           providers={providers}
           busy={providerBusy}
@@ -486,9 +565,10 @@ export default function SettingsPage() {
           onDelete={(id, label) => handleProviderDelete(id, label)}
         />
         <p className="text-xs mt-2" style={{ color: "var(--text-muted)" }}>
-          Cada alteração reinicia o container <code>openclaw-kozw</code> (~5s
-          downtime) pra que a nova var entre em vigor. Backup automático em{" "}
-          <code>.env.bak.&lt;timestamp&gt;</code>.
+          Pra provedores que não suportam OAuth (DeepSeek, Perplexity) ou
+          quando você prefere pagamento por token. Cada alteração reinicia o
+          container <code>openclaw-kozw</code> (~5s downtime). Backup automático
+          em <code>.env.bak.&lt;timestamp&gt;</code>.
         </p>
       </Section>
 
