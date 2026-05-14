@@ -4,9 +4,7 @@ import os from 'os';
 
 import {
   OPENCLAW_WORKSPACE,
-  OPENCLAW_CONFIG,
   WORKSPACE_IDENTITY,
-  WORKSPACE_TOOLS,
 } from '@/lib/paths';
 
 const WORKSPACE_PATH = OPENCLAW_WORKSPACE;
@@ -29,88 +27,9 @@ function parseIdentityMd(): { name: string; creature: string; emoji: string } {
   }
 }
 
-interface OpenClawConfig {
-  channels?: {
-    telegram?: {
-      enabled?: boolean;
-      accounts?: Record<string, unknown>;
-    };
-  };
-  plugins?: {
-    entries?: Record<string, { enabled?: boolean }>;
-  };
-}
-
-/**
- * Detect external integration status by inspecting the live OpenClaw config.
- *
- * Earlier iterations read from `~/.openclaw/openclaw.json` (the upstream
- * tenacitOS layout). In our deployment the config lives at
- * `OPENCLAW_DIR/openclaw.json` (mounted from the host). Probing the wrong
- * path made everything show "Not Configured" even though Telegram and GOG
- * are active.
- */
-function getIntegrationStatus() {
-  let config: OpenClawConfig | null = null;
-  try {
-    config = JSON.parse(fs.readFileSync(OPENCLAW_CONFIG, 'utf-8')) as OpenClawConfig;
-  } catch {
-    config = null;
-  }
-
-  const integrations: Array<{
-    id: string;
-    name: string;
-    status: 'connected' | 'disconnected' | 'configured' | 'not_configured';
-    icon: string;
-    lastActivity: string | null;
-    detail: string | null;
-  }> = [];
-
-  // Telegram — channels.telegram.enabled + accounts count
-  const telegram = config?.channels?.telegram;
-  const telegramEnabled = !!telegram?.enabled;
-  const telegramAccounts = telegram?.accounts ? Object.keys(telegram.accounts).length : 0;
-  integrations.push({
-    id: 'telegram',
-    name: 'Telegram',
-    status: telegramEnabled ? 'connected' : 'disconnected',
-    icon: 'MessageCircle',
-    lastActivity: telegramEnabled ? new Date().toISOString() : null,
-    detail: telegramEnabled
-      ? `${telegramAccounts} bot${telegramAccounts === 1 ? '' : 's'} configured`
-      : null,
-  });
-
-  // Twitter (bird CLI) — `bird` + `auth_token` mentioned in TOOLS.md
-  let twitterConfigured = false;
-  try {
-    const toolsContent = fs.readFileSync(WORKSPACE_TOOLS, 'utf-8');
-    twitterConfigured = toolsContent.includes('bird') && toolsContent.includes('auth_token');
-  } catch {}
-  integrations.push({
-    id: 'twitter',
-    name: 'Twitter (bird CLI)',
-    status: twitterConfigured ? 'configured' : 'not_configured',
-    icon: 'Twitter',
-    lastActivity: null,
-    detail: null,
-  });
-
-  // Google (GOG / google-gemini-cli-auth) — enabled plugin entry
-  const googlePlugin = config?.plugins?.entries?.['google-gemini-cli-auth'];
-  const googleConfigured = !!googlePlugin?.enabled;
-  integrations.push({
-    id: 'google',
-    name: 'Google (GOG)',
-    status: googleConfigured ? 'configured' : 'not_configured',
-    icon: 'Mail',
-    lastActivity: null,
-    detail: googleConfigured ? 'google-gemini-cli-auth plugin enabled' : null,
-  });
-
-  return integrations;
-}
+// `getIntegrationStatus` removida — substituída por /api/openclaw/status
+// que lê o estado real (running/connected/lastError) via
+// `openclaw channels status --json` em vez de inferir do filesystem.
 
 export async function GET() {
   const identity = parseIdentityMd();
@@ -138,7 +57,6 @@ export async function GET() {
         used: os.totalmem() - os.freemem(),
       },
     },
-    integrations: getIntegrationStatus(),
     timestamp: new Date().toISOString(),
   };
   
