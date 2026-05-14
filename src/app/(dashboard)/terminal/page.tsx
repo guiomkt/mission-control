@@ -11,19 +11,30 @@ interface HistoryEntry {
   ts: Date;
 }
 
+// Quick commands ajustados pra infra real do operador (Hostinger VPS,
+// compose-based, sem pm2 nem systemd). Categorias inline (sem grupos
+// visuais — a UI mostra como pílulas em fila):
+//   • Recursos do host
+//   • Docker (containers irmãos visíveis via socket bind-mount)
+//   • OpenClaw gateway (kozw)
+//   • Filesystem do workspace (mountado RO em /workspace)
 const QUICK_COMMANDS = [
+  // Recursos do host
   "df -h /",
   "free -h",
   "uptime",
-  "ps aux | grep node",
-  "systemctl status mission-control",
-  "pm2 list",
-  "ls /root/.openclaw/workspace",
-  "git -C /root/.openclaw/workspace/mission-control status",
-  "journalctl -u mission-control -n 20 --no-pager",
-  "docker ps",
-  "netstat -tlnp",
   "cat /proc/loadavg",
+  // Docker (no host via socket bind-mount)
+  "docker ps",
+  "docker stats --no-stream",
+  "docker logs --tail 30 mission-control",
+  "docker logs --tail 30 openclaw-kozw-openclaw-1",
+  // OpenClaw gateway (kozw)
+  "docker exec openclaw-kozw-openclaw-1 openclaw channels status",
+  "docker exec openclaw-kozw-openclaw-1 openclaw health",
+  // Workspace do gateway (mountado RO em /workspace no painel)
+  "ls -la /workspace/agents",
+  "head -40 /workspace/openclaw.json",
 ];
 
 export default function TerminalPage() {

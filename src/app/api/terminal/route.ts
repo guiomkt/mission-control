@@ -52,8 +52,11 @@ const BLOCKED_PATTERNS: RegExp[] = [
   /`[^`]*`/,        // command substitution
   /\$\(/,           // command substitution
   />{1,2}\s*[^|&]/,  // output redirect (not pipe)
-  /eval\s/,
-  /exec\s/,
+  // `exec` puro no início da linha rouba o shell — bloqueia. Mas
+  // permite `docker exec ...` que é um subcomando inofensivo do CLI.
+  // Idem pra eval.
+  /^\s*eval\s/,
+  /^\s*exec\s/,
   /\bsource\b/,
   /\bmount\b/,
   /\bumount\b/,
