@@ -17,6 +17,10 @@ import { SystemInfo } from "@/components/SystemInfo";
 import { ChangePasswordModal } from "@/components/ChangePasswordModal";
 import { AddTelegramAccountModal } from "@/components/AddTelegramAccountModal";
 import { WhatsAppPairingModal } from "@/components/WhatsAppPairingModal";
+import {
+  ProviderKeyModal,
+  type ProviderModalSpec,
+} from "@/components/ProviderKeyModal";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 
 // ── Tipos do /api/openclaw/status ────────────────────────────────────────
@@ -65,10 +69,25 @@ interface PluginsResponse {
   plugins: Array<{ id: string; enabled: boolean; installed: boolean }>;
 }
 
+interface ProviderEntry {
+  id: string;
+  label: string;
+  envName: string;
+  helpUrl?: string;
+  status: "configured" | "legacy" | "missing";
+  lastFour?: string;
+  updatedAt?: string;
+}
+
+interface ProvidersResponse {
+  providers: ProviderEntry[];
+}
+
 export default function SettingsPage() {
   const [systemData, setSystemData] = useState<SystemData | null>(null);
   const [status, setStatus] = useState<OpenClawStatus | null>(null);
   const [plugins, setPlugins] = useState<PluginsResponse | null>(null);
+  const [providers, setProviders] = useState<ProviderEntry[] | null>(null);
   const [userEmail, setUserEmail] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
@@ -78,14 +97,19 @@ export default function SettingsPage() {
   const [tgModalOpen, setTgModalOpen] = useState(false);
   const [waModalOpen, setWaModalOpen] = useState(false);
   const [waAccount, setWaAccount] = useState<string>("");
+  const [providerModal, setProviderModal] = useState<ProviderModalSpec | null>(
+    null,
+  );
+  const [providerBusy, setProviderBusy] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     setError(null);
     try {
-      const [sysRes, stRes, plRes] = await Promise.all([
+      const [sysRes, stRes, plRes, prRes] = await Promise.all([
         fetch("/api/system", { cache: "no-store" }),
         fetch("/api/openclaw/status", { cache: "no-store" }),
         fetch("/api/openclaw/plugins", { cache: "no-store" }),
+        fetch("/api/openclaw/providers", { cache: "no-store" }),
       ]);
       if (sysRes.ok) setSystemData(await sysRes.json());
       if (stRes.ok) {
@@ -97,6 +121,10 @@ export default function SettingsPage() {
         );
       }
       if (plRes.ok) setPlugins(await plRes.json());
+      if (prRes.ok) {
+        const data = (await prRes.json()) as ProvidersResponse;
+        setProviders(data.providers);
+      }
       setLastRefresh(new Date());
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -151,8 +179,75 @@ export default function SettingsPage() {
     setWaModalOpen(true);
   };
 
+  const handleProviderMigrate = async (id: string) => {
+    setProviderBusy(id);
+    try {
+      const res = await fetch(`/api/openclaw/providers/${encodeURIComponent(id)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ migrate: true }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        alert(data.detail || data.error || "Falha ao migrar chave");
+        return;
+      }
+      refresh();
+    } catch (err) {
+      alert(err instanceof Error ? err.message : String(err));
+    } finally {
+      setProviderBusy(null);
+    }
+  };
+
+  const handleProviderDelete = async (id: string, label: string) => {
+    if (
+      !confirm(
+        `Remover a chave de ${label}? O container vai ser reiniciado (~5s downtime) sem essa env.`,
+      )
+    ) {
+      return;
+    }
+    setProviderBusy(id);
+    try {
+      const res = await fetch(`/api/openclaw/providers/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        alert(data.detail || data.error || "Falha ao remover chave");
+        return;
+      }
+      refresh();
+    } catch (err) {
+      alert(err instanceof Error ? err.message : String(err));
+    } finally {
+      setProviderBusy(null);
+    }
+  };
+
   const telegramAccounts = status?.channelAccounts?.telegram ?? [];
   const whatsappAccounts = status?.channelAccounts?.whatsapp ?? [];
+
+  // Detecta canais quebrados pra mostrar banner no topo. Considera unhealthy
+  // qualquer conta configurada que não está conectada (running && connected).
+  const brokenChannels: Array<{ kind: "telegram" | "whatsapp"; account: string; lastError?: string | null }> =
+    [
+      ...telegramAccounts
+        .filter((a) => !(a.running && (a.connected ?? a.running)))
+        .map((a) => ({
+          kind: "telegram" as const,
+          account: a.accountId,
+          lastError: a.lastError,
+        })),
+      ...whatsappAccounts
+        .filter((a) => !(a.running && (a.connected ?? a.running)))
+        .map((a) => ({
+          kind: "whatsapp" as const,
+          account: a.accountId,
+          lastError: a.lastError,
+        })),
+    ];
 
   return (
     <div className="p-4 md:p-8">
@@ -203,6 +298,53 @@ export default function SettingsPage() {
         >
           <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
           <span>{error}</span>
+        </div>
+      )}
+
+      {brokenChannels.length > 0 && (
+        <div
+          className="mb-4 px-4 py-3 rounded-lg flex items-start gap-3 text-sm"
+          style={{
+            backgroundColor: "var(--warning-bg, rgba(255,149,0,0.08))",
+            color: "var(--warning, #FF9500)",
+            border: "1px solid var(--warning, #FF9500)",
+          }}
+        >
+          <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+          <div className="flex-1 min-w-0">
+            <p className="font-semibold mb-1">
+              {brokenChannels.length === 1
+                ? "1 canal em loop de reconexão"
+                : `${brokenChannels.length} canais em loop de reconexão`}
+            </p>
+            <ul className="space-y-1 text-xs opacity-90">
+              {brokenChannels.map((c) => (
+                <li key={`${c.kind}/${c.account}`}>
+                  <span className="font-mono">{c.kind}/{c.account}</span>
+                  {" — "}
+                  <button
+                    onClick={() => handleRemove(c.kind, c.account)}
+                    className="underline"
+                    style={{ color: "inherit" }}
+                  >
+                    Remover agora
+                  </button>
+                  {c.kind === "whatsapp" && (
+                    <>
+                      {" "}ou{" "}
+                      <button
+                        onClick={() => handleReconnectWhatsApp(c.account)}
+                        className="underline"
+                        style={{ color: "inherit" }}
+                      >
+                        Re-parear
+                      </button>
+                    </>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </div>
         </div>
       )}
 
@@ -327,6 +469,29 @@ export default function SettingsPage() {
         </p>
       </Section>
 
+      <Section title="Provedores de IA">
+        <ProvidersTable
+          providers={providers}
+          busy={providerBusy}
+          onConnect={(p) =>
+            setProviderModal({
+              id: p.id,
+              label: p.label,
+              envName: p.envName,
+              helpUrl: p.helpUrl,
+              currentLastFour: p.lastFour,
+            })
+          }
+          onMigrate={(id) => handleProviderMigrate(id)}
+          onDelete={(id, label) => handleProviderDelete(id, label)}
+        />
+        <p className="text-xs mt-2" style={{ color: "var(--text-muted)" }}>
+          Cada alteração reinicia o container <code>openclaw-kozw</code> (~5s
+          downtime) pra que a nova var entre em vigor. Backup automático em{" "}
+          <code>.env.bak.&lt;timestamp&gt;</code>.
+        </p>
+      </Section>
+
       <ChangePasswordModal
         isOpen={pwModalOpen}
         onClose={() => setPwModalOpen(false)}
@@ -349,6 +514,15 @@ export default function SettingsPage() {
         onClose={() => setWaModalOpen(false)}
         onSuccess={() => {
           setWaModalOpen(false);
+          refresh();
+        }}
+      />
+      <ProviderKeyModal
+        isOpen={providerModal !== null}
+        provider={providerModal}
+        onClose={() => setProviderModal(null)}
+        onSuccess={() => {
+          setProviderModal(null);
           refresh();
         }}
       />
@@ -512,6 +686,163 @@ function ChannelTable({
                     >
                       <Trash2 className="w-3.5 h-3.5" />
                     </button>
+                  </div>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function ProvidersTable({
+  providers,
+  busy,
+  onConnect,
+  onMigrate,
+  onDelete,
+}: {
+  providers: ProviderEntry[] | null;
+  busy: string | null;
+  onConnect: (p: ProviderEntry) => void;
+  onMigrate: (id: string) => void;
+  onDelete: (id: string, label: string) => void;
+}) {
+  if (providers === null) {
+    return (
+      <div
+        className="rounded-xl p-5 text-sm text-center"
+        style={{
+          backgroundColor: "var(--card)",
+          border: "1px solid var(--border)",
+          color: "var(--text-muted)",
+        }}
+      >
+        Carregando…
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className="rounded-xl overflow-hidden"
+      style={{
+        backgroundColor: "var(--card)",
+        border: "1px solid var(--border)",
+      }}
+    >
+      <table className="w-full text-sm">
+        <thead>
+          <tr style={{ color: "var(--text-muted)" }}>
+            <th className="text-left px-4 py-2 text-xs uppercase">Provedor</th>
+            <th className="text-left px-4 py-2 text-xs uppercase">Status</th>
+            <th className="text-left px-4 py-2 text-xs uppercase">Chave</th>
+            <th className="text-right px-4 py-2 text-xs uppercase">Ações</th>
+          </tr>
+        </thead>
+        <tbody>
+          {providers.map((p) => {
+            const isBusy = busy === p.id;
+            return (
+              <tr key={p.id} style={{ borderTop: "1px solid var(--border)" }}>
+                <td
+                  className="px-4 py-3"
+                  style={{ color: "var(--text-primary)" }}
+                >
+                  <div className="font-medium">{p.label}</div>
+                  <div
+                    className="text-xs font-mono"
+                    style={{ color: "var(--text-muted)" }}
+                  >
+                    {p.envName}
+                  </div>
+                </td>
+                <td className="px-4 py-3">
+                  {p.status === "configured" && (
+                    <span
+                      className="inline-flex items-center gap-1 text-xs"
+                      style={{ color: "var(--success, #34C759)" }}
+                    >
+                      <CheckCircle2 className="w-3.5 h-3.5" />
+                      gerenciado
+                    </span>
+                  )}
+                  {p.status === "legacy" && (
+                    <span
+                      className="inline-flex items-center gap-1 text-xs"
+                      style={{ color: "var(--warning, #FF9500)" }}
+                      title="Existe no .env do container, mas não passou pelo painel"
+                    >
+                      <AlertTriangle className="w-3.5 h-3.5" />
+                      legado
+                    </span>
+                  )}
+                  {p.status === "missing" && (
+                    <span
+                      className="inline-flex items-center gap-1 text-xs"
+                      style={{ color: "var(--text-muted)" }}
+                    >
+                      <XCircle className="w-3.5 h-3.5" />
+                      não configurado
+                    </span>
+                  )}
+                </td>
+                <td
+                  className="px-4 py-3 text-xs font-mono"
+                  style={{ color: "var(--text-muted)" }}
+                >
+                  {p.lastFour ? `…${p.lastFour}` : "—"}
+                </td>
+                <td className="px-4 py-3">
+                  <div className="flex items-center justify-end gap-2">
+                    {p.status === "legacy" && (
+                      <button
+                        onClick={() => onMigrate(p.id)}
+                        disabled={isBusy}
+                        className="px-2.5 py-1 rounded text-xs disabled:opacity-50"
+                        style={{
+                          backgroundColor: "var(--card-elevated)",
+                          color: "var(--accent)",
+                          border: "1px solid var(--border)",
+                        }}
+                        title="Importar a chave existente do .env pro painel"
+                      >
+                        Migrar
+                      </button>
+                    )}
+                    <button
+                      onClick={() => onConnect(p)}
+                      disabled={isBusy}
+                      className="px-2.5 py-1 rounded text-xs font-semibold disabled:opacity-50"
+                      style={{
+                        backgroundColor:
+                          p.status === "missing" ? "var(--accent)" : "var(--card-elevated)",
+                        color:
+                          p.status === "missing" ? "white" : "var(--text-primary)",
+                        border:
+                          p.status === "missing"
+                            ? "1px solid var(--accent)"
+                            : "1px solid var(--border)",
+                      }}
+                    >
+                      {p.status === "missing" ? "Conectar" : "Atualizar"}
+                    </button>
+                    {p.status === "configured" && (
+                      <button
+                        onClick={() => onDelete(p.id, p.label)}
+                        disabled={isBusy}
+                        className="p-1.5 rounded disabled:opacity-50"
+                        style={{
+                          backgroundColor: "var(--card-elevated)",
+                          color: "var(--error, #FF3B30)",
+                        }}
+                        title="Remover chave"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    )}
                   </div>
                 </td>
               </tr>
