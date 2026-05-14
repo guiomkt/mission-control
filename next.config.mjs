@@ -8,16 +8,29 @@
  *    Replace with nonce-based CSP if/when we move off the App Router runtime.
  *  - `style-src 'self' 'unsafe-inline'`: required by Tailwind + Next CSS-in-JS.
  *  - `img-src` includes data: for inline thumbnails; blob: for client-side previews.
- *  - `connect-src 'self'`: blocks exfiltration to third parties.
+ *  - `connect-src` autoriza o projeto Supabase configurado (REST + Realtime
+ *    via wss). Lemos a URL do NEXT_PUBLIC_SUPABASE_URL pra não hardcodar o
+ *    project ref — se alguém clonar pra outro projeto, o CSP acompanha.
  *  - `frame-ancestors 'none'`: clickjacking protection (also enforced by X-Frame-Options).
  */
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL?.replace(/\/$/, '') || '';
+const supabaseWs = supabaseUrl.replace(/^https:/, 'wss:');
+
+const connectSrc = [
+  "'self'",
+  supabaseUrl,
+  supabaseWs,
+]
+  .filter(Boolean)
+  .join(' ');
+
 const CSP = [
   "default-src 'self'",
   "script-src 'self' 'unsafe-inline'",
   "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
   "img-src 'self' data: blob:",
   "font-src 'self' https://fonts.gstatic.com data:",
-  "connect-src 'self'",
+  `connect-src ${connectSrc}`,
   "frame-ancestors 'none'",
   "base-uri 'self'",
   "form-action 'self'",
