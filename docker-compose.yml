@@ -19,6 +19,13 @@ services:
     build:
       context: ../mission-control-src
       dockerfile: Dockerfile
+      # Build args precisam ser explícitos no compose — diferente do
+      # `env_file`/`environment` que só afetam o runtime, esses são
+      # passados pro Dockerfile no momento do build. O `${VAR}` aqui é
+      # interpolado a partir do .env do diretório do compose.
+      args:
+        NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
+        NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY}
     image: mission-control:hardening-v1
     container_name: mission-control
     init: true

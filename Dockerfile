@@ -26,6 +26,14 @@ FROM node:${NODE_VERSION} AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
+# `NEXT_PUBLIC_*` precisa estar disponível NESTE estágio porque o Next.js
+# inlinea o valor diretamente nos bundles JS do client. Vem como build
+# arg do compose (que lê do .env do host). Sem essas vars o
+# `createSupabaseBrowserClient()` joga "env vars missing" no browser.
+ARG NEXT_PUBLIC_SUPABASE_URL
+ARG NEXT_PUBLIC_SUPABASE_ANON_KEY
+ENV NEXT_PUBLIC_SUPABASE_URL=${NEXT_PUBLIC_SUPABASE_URL}
+ENV NEXT_PUBLIC_SUPABASE_ANON_KEY=${NEXT_PUBLIC_SUPABASE_ANON_KEY}
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV NODE_ENV=production
 RUN npm run build
