@@ -21,6 +21,19 @@ import {
 } from "lucide-react";
 import { EditAgentIdentityModal } from "@/components/EditAgentIdentityModal";
 import { DeleteAgentDialog } from "@/components/DeleteAgentDialog";
+import { BindingsManager } from "@/components/BindingsManager";
+import { SubagentsEditor } from "@/components/SubagentsEditor";
+import { HeartbeatEditor } from "@/components/HeartbeatEditor";
+
+interface AgentHeartbeat {
+  every?: string;
+  activeHours?: { start?: string; end?: string; timezone?: string };
+  target?: string;
+  to?: string;
+  accountId?: string;
+  lightContext?: boolean;
+  isolatedSession?: boolean;
+}
 
 interface AgentDetail {
   id: string;
@@ -36,17 +49,19 @@ interface AgentDetail {
   model: string | null;
   fallbacks: string[];
   allowAgents: string[];
-  heartbeat: Record<string, unknown> | null;
+  heartbeat: AgentHeartbeat | null;
   bindings: Array<{ channel: string | null; accountId: string | null }>;
   referencedBy: Array<{ id: string; name: string }>;
   activeSessions: number;
   isMain: boolean;
+  siblings: Array<{ id: string; name: string; emoji?: string }>;
+  availableChannels: Array<{ name: string; accounts: string[] }>;
 }
 
 type TabKey =
   | "identity"
   | "prompt"
-  | "model"
+  | "heartbeat"
   | "subagents"
   | "bindings"
   | "skills"
@@ -55,10 +70,10 @@ type TabKey =
 
 const TABS: Array<{ key: TabKey; label: string; icon: React.ElementType; phase: number }> = [
   { key: "identity", label: "Identidade", icon: Bot, phase: 1 },
-  { key: "prompt", label: "Prompt", icon: Edit3, phase: 3 },
-  { key: "model", label: "Modelo", icon: Wrench, phase: 2 },
-  { key: "subagents", label: "Subagents", icon: Users, phase: 2 },
   { key: "bindings", label: "Bindings", icon: MessageSquare, phase: 2 },
+  { key: "subagents", label: "Subagents", icon: Users, phase: 2 },
+  { key: "heartbeat", label: "Heartbeat", icon: Calendar, phase: 2 },
+  { key: "prompt", label: "Prompt", icon: Edit3, phase: 3 },
   { key: "skills", label: "Skills", icon: Wrench, phase: 4 },
   { key: "sessions", label: "Sessions", icon: History, phase: 5 },
   { key: "analytics", label: "Analytics", icon: BarChart3, phase: 5 },
@@ -290,7 +305,34 @@ export default function AgentDetailPage() {
 
       {/* Tab content */}
       {activeTab === "identity" && <IdentityTab agent={agent} />}
-      {activeTab !== "identity" && (
+      {activeTab === "bindings" && (
+        <BindingsManager
+          agentId={agent.id}
+          bindings={agent.bindings}
+          availableChannels={agent.availableChannels}
+          onChange={fetchAgent}
+        />
+      )}
+      {activeTab === "subagents" && (
+        <SubagentsEditor
+          agentId={agent.id}
+          allowAgents={agent.allowAgents}
+          siblings={agent.siblings}
+          onChange={fetchAgent}
+        />
+      )}
+      {activeTab === "heartbeat" && (
+        <HeartbeatEditor
+          agentId={agent.id}
+          heartbeat={agent.heartbeat}
+          availableChannels={agent.availableChannels}
+          onChange={fetchAgent}
+        />
+      )}
+      {(activeTab === "prompt" ||
+        activeTab === "skills" ||
+        activeTab === "sessions" ||
+        activeTab === "analytics") && (
         <Placeholder phase={TABS.find((t) => t.key === activeTab)?.phase ?? 0} />
       )}
 

@@ -11,9 +11,6 @@
  */
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
-import { promises as fs } from "fs";
-import path from "path";
-import { OPENCLAW_DIR } from "@/lib/paths";
 import { listAgents, listSessions } from "@/lib/openclaw-client";
 import {
   openclawExec,
@@ -22,53 +19,13 @@ import {
 } from "@/lib/openclaw-exec";
 import { validateAgentId, RESERVED_AGENT_IDS } from "@/lib/agent-validation";
 import { auditMutation } from "@/lib/audit-log";
-import { SingleFlightCache } from "@/lib/openclaw-cache";
+import {
+  agentDetailCache,
+  getCachedConfig,
+  readOpenClawConfig,
+} from "@/lib/agent-detail-cache";
 
 export const dynamic = "force-dynamic";
-
-// ── Tipos da config ──────────────────────────────────────────────────────
-
-interface AgentConfigEntry {
-  id: string;
-  name?: string;
-  workspace?: string;
-  ui?: { emoji?: string; color?: string };
-  identity?: {
-    name?: string;
-    emoji?: string;
-    theme?: string;
-    avatar?: string;
-  };
-  subagents?: { allowAgents?: string[] };
-  model?: { primary?: string; fallbacks?: string[] };
-  heartbeat?: Record<string, unknown>;
-}
-
-interface OpenClawConfig {
-  agents?: {
-    list?: AgentConfigEntry[];
-    defaults?: { model?: { primary?: string } | string };
-  };
-  bindings?: Array<{
-    agentId?: string;
-    match?: { channel?: string; accountId?: string };
-  }>;
-}
-
-async function readConfig(): Promise<OpenClawConfig | null> {
-  try {
-    const raw = await fs.readFile(path.join(OPENCLAW_DIR, "openclaw.json"), "utf-8");
-    return JSON.parse(raw) as OpenClawConfig;
-  } catch {
-    return null;
-  }
-}
-
-/** Cache curto pra evitar re-read do JSON em rajadas. */
-const detailCache = new SingleFlightCache<OpenClawConfig | null>({
-  ttlMs: 5_000,
-  maxAgeMs: 30_000,
-});
 
 // ── GET (detail) ─────────────────────────────────────────────────────────
 
@@ -90,7 +47,7 @@ export async function GET(
   try {
     const [fsAgents, config, sessions] = await Promise.all([
       listAgents(),
-      detailCache.get(() => readConfig()),
+      getCachedConfig(),
       listSessions(id).catch(() => []),
     ]);
 
@@ -115,6 +72,33 @@ export async function GET(
         name: a.identity?.name ?? a.name ?? a.id,
       }));
 
+    // Pickers: outros agentes (pra SubagentsEditor) + canais disponíveis
+    // (pra BindingsManager). Mantemos minimal pra não bloatear.
+    const siblings = (config?.agents?.list ?? [])
+      .filter((a) => a.id !== id)
+      .map((a) => ({
+        id: a.id,
+        name: a.identity?.name ?? a.name ?? a.id,
+        emoji: a.identity?.emoji ?? a.ui?.emoji,
+      }));
+
+    // Lê canais direto do `channels` top-level. Cada canal tem
+    // `accounts` dict; pegamos só os nomes pra picker.
+    const channelsRaw = (config as unknown as {
+      channels?: Record<
+        string,
+        { accounts?: Record<string, unknown> | unknown[] }
+      >;
+    } | null)?.channels ?? {};
+    const availableChannels = Object.entries(channelsRaw).map(([name, c]) => ({
+      name,
+      accounts: Array.isArray(c.accounts)
+        ? c.accounts.filter((x): x is string => typeof x === "string")
+        : c.accounts && typeof c.accounts === "object"
+          ? Object.keys(c.accounts as Record<string, unknown>)
+          : [],
+    }));
+
     return NextResponse.json({
       id,
       name: entry?.identity?.name ?? entry?.name ?? fsAgent.name,
@@ -137,6 +121,8 @@ export async function GET(
       referencedBy,
       activeSessions: sessions.length,
       isMain: id === "main",
+      siblings,
+      availableChannels,
     });
   } catch (err) {
     console.error("[api/agents/[id] GET] error", err);
@@ -182,7 +168,8 @@ export async function DELETE(
 
   try {
     // Proteção 2: bloquear se outros agentes ainda referenciam este.
-    const config = await readConfig();
+    // Read direto (sem cache) — queremos estado fresco antes de deletar.
+    const config = await readOpenClawConfig();
     const referencedBy = (config?.agents?.list ?? [])
       .filter((a) => a.id !== id && a.subagents?.allowAgents?.includes(id))
       .map((a) => a.id);
@@ -218,7 +205,7 @@ export async function DELETE(
     });
 
     // Invalida cache pra refletir mudança imediata.
-    detailCache.invalidate();
+    agentDetailCache.invalidate();
 
     return NextResponse.json({
       success: true,
