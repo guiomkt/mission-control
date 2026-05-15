@@ -24,6 +24,7 @@ import { DeleteAgentDialog } from "@/components/DeleteAgentDialog";
 import { BindingsManager } from "@/components/BindingsManager";
 import { SubagentsEditor } from "@/components/SubagentsEditor";
 import { HeartbeatEditor } from "@/components/HeartbeatEditor";
+import { PromptTab } from "@/components/PromptTab";
 
 interface AgentHeartbeat {
   every?: string;
@@ -329,8 +330,8 @@ export default function AgentDetailPage() {
           onChange={fetchAgent}
         />
       )}
-      {(activeTab === "prompt" ||
-        activeTab === "skills" ||
+      {activeTab === "prompt" && <PromptTab agentId={agent.id} />}
+      {(activeTab === "skills" ||
         activeTab === "sessions" ||
         activeTab === "analytics") && (
         <Placeholder phase={TABS.find((t) => t.key === activeTab)?.phase ?? 0} />
