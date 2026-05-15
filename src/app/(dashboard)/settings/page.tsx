@@ -25,6 +25,10 @@ import {
   OAuthProfilesTable,
   type OAuthProvider,
 } from "@/components/OAuthProfilesTable";
+import {
+  ModelCostBanner,
+  type ModelCostStatus,
+} from "@/components/ModelCostBanner";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 
 // ── Tipos do /api/openclaw/status ────────────────────────────────────────
@@ -105,6 +109,7 @@ export default function SettingsPage() {
   const [plugins, setPlugins] = useState<PluginsResponse | null>(null);
   const [providers, setProviders] = useState<ProviderEntry[] | null>(null);
   const [oauthProfiles, setOauthProfiles] = useState<OAuthProfilesResponse | null>(null);
+  const [modelCost, setModelCost] = useState<ModelCostStatus | null>(null);
   const [userEmail, setUserEmail] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
@@ -122,12 +127,13 @@ export default function SettingsPage() {
   const refresh = useCallback(async () => {
     setError(null);
     try {
-      const [sysRes, stRes, plRes, prRes, oaRes] = await Promise.all([
+      const [sysRes, stRes, plRes, prRes, oaRes, mcRes] = await Promise.all([
         fetch("/api/system", { cache: "no-store" }),
         fetch("/api/openclaw/status", { cache: "no-store" }),
         fetch("/api/openclaw/plugins", { cache: "no-store" }),
         fetch("/api/openclaw/providers", { cache: "no-store" }),
         fetch("/api/openclaw/oauth/profiles", { cache: "no-store" }),
+        fetch("/api/openclaw/models/cost-status", { cache: "no-store" }),
       ]);
       if (sysRes.ok) setSystemData(await sysRes.json());
       if (stRes.ok) {
@@ -146,6 +152,10 @@ export default function SettingsPage() {
       if (oaRes.ok) {
         const data = (await oaRes.json()) as OAuthProfilesResponse;
         setOauthProfiles(data);
+      }
+      if (mcRes.ok) {
+        const data = (await mcRes.json()) as ModelCostStatus;
+        setModelCost(data);
       }
       setLastRefresh(new Date());
     } catch (err) {
@@ -532,6 +542,15 @@ export default function SettingsPage() {
         <p className="text-xs mt-2" style={{ color: "var(--text-muted)" }}>
           Pra habilitar/desabilitar um plugin é necessário editar o{" "}
           <code>openclaw.json</code> via SSH e reiniciar o gateway.
+        </p>
+      </Section>
+
+      <Section title="Modelo do agente (cost-class)">
+        <ModelCostBanner data={modelCost} />
+        <p className="text-xs mt-2" style={{ color: "var(--text-muted)" }}>
+          Monitoramento contínuo: a cada 15s o painel verifica se o modelo
+          padrão e fallback do agente seguem em OAuth. Se algum virar
+          paga silenciosamente, este banner fica vermelho.
         </p>
       </Section>
 
