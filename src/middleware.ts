@@ -55,10 +55,17 @@ export async function middleware(request: NextRequest) {
 export const config = {
   matcher: [
     /*
-     * Match every path except static assets and files with extensions.
-     * We need middleware to run on every page so Supabase can refresh
-     * tokens even on routes that don't otherwise care about auth.
+     * Match every page route except static assets. The `.*\\..*` skip
+     * is intentionally NOT applied to /api/* (see second matcher) — a
+     * filename with a dot in a path segment (e.g.
+     * `/api/agents/X/workspace/SOUL.md`) would otherwise bypass auth.
      */
-    "/((?!_next/static|_next/image|favicon.ico|.*\\..*).*)",
+    "/((?!_next/static|_next/image|favicon\\.ico|api/|.*\\..*).*)",
+    /*
+     * ALWAYS run middleware on /api/* — auth must apply regardless of
+     * path content. Public API routes are filtered inside the handler
+     * via `isPublicPath` (e.g. `/api/health`, `/api/auth/*`).
+     */
+    "/api/:path*",
   ],
 };
