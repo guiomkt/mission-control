@@ -26,6 +26,8 @@ import { SubagentsEditor } from "@/components/SubagentsEditor";
 import { HeartbeatEditor } from "@/components/HeartbeatEditor";
 import { PromptTab } from "@/components/PromptTab";
 import { SkillsManager } from "@/components/SkillsManager";
+import { SessionsBrowser } from "@/components/SessionsBrowser";
+import { AgentAnalyticsCard } from "@/components/AgentAnalyticsCard";
 
 interface AgentHeartbeat {
   every?: string;
@@ -333,9 +335,8 @@ export default function AgentDetailPage() {
       )}
       {activeTab === "prompt" && <PromptTab agentId={agent.id} />}
       {activeTab === "skills" && <SkillsManager agentId={agent.id} />}
-      {(activeTab === "sessions" || activeTab === "analytics") && (
-        <Placeholder phase={TABS.find((t) => t.key === activeTab)?.phase ?? 0} />
-      )}
+      {activeTab === "sessions" && <SessionsBrowser agentId={agent.id} />}
+      {activeTab === "analytics" && <AgentAnalyticsCard agentId={agent.id} />}
 
       {/* Modais */}
       <EditAgentIdentityModal
