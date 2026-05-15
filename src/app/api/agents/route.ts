@@ -1,8 +1,22 @@
 import { NextResponse } from "next/server";
+import type { NextRequest } from "next/server";
 import { promises as fs } from "fs";
 import path from "path";
 import { OPENCLAW_DIR, OPENCLAW_WORKSPACE } from "@/lib/paths";
 import { listAgents, listSessions } from "@/lib/openclaw-client";
+import {
+  openclawExec,
+  OpenClawExecError,
+  withConfigLock,
+} from "@/lib/openclaw-exec";
+import {
+  validateAgentId,
+  validateAgentName,
+  normalizeAgentEmoji,
+  normalizeAgentTheme,
+  workspacePathFor,
+} from "@/lib/agent-validation";
+import { auditMutation } from "@/lib/audit-log";
 
 export const dynamic = "force-dynamic";
 
@@ -171,6 +185,182 @@ export async function GET() {
     console.error("[api/agents] error", error);
     return NextResponse.json(
       { error: "Failed to load agents" },
+      { status: 500 },
+    );
+  }
+}
+
+/**
+ * Criar um novo agente isolado.
+ * POST /api/agents
+ * Body: {
+ *   id: string,             // slug (regex [a-z][a-z0-9-]{0,39})
+ *   name?: string,          // display name (opcional, set-identity depois)
+ *   emoji?: string,
+ *   theme?: string,
+ *   model?: string,         // model id (default: openai-codex/gpt-5.4)
+ * }
+ *
+ * Executa em 2 passos com `withConfigLock`:
+ *   1. `openclaw agents add <id> --workspace ... --model ... --non-interactive --json`
+ *   2. (best-effort) `openclaw agents set-identity --agent <id> --name ... --emoji ... --theme ...`
+ *
+ * Se passo 2 falha, o agente já foi criado — operador pode editar identidade
+ * pela UI depois. Audit log captura ambos os outcomes.
+ */
+export async function POST(request: NextRequest) {
+  let body: {
+    id?: unknown;
+    name?: unknown;
+    emoji?: unknown;
+    theme?: unknown;
+    model?: unknown;
+  };
+  try {
+    body = await request.json();
+  } catch {
+    return NextResponse.json(
+      { error: "Body deve ser JSON válido." },
+      { status: 400 },
+    );
+  }
+
+  // Validações sincronas
+  const idCheck = validateAgentId(body.id);
+  if (!idCheck.ok) {
+    return NextResponse.json({ error: idCheck.reason }, { status: 400 });
+  }
+  const id = body.id as string;
+
+  const nameCheck = validateAgentName(body.name);
+  if (!nameCheck.ok) {
+    return NextResponse.json({ error: nameCheck.reason }, { status: 400 });
+  }
+  const friendlyName =
+    typeof body.name === "string" ? body.name.trim() : undefined;
+  const emoji = normalizeAgentEmoji(body.emoji);
+  const theme = normalizeAgentTheme(body.theme);
+  const model =
+    typeof body.model === "string" && body.model.length > 0
+      ? body.model.trim()
+      : "openai-codex/gpt-5.4";
+
+  // Checa colisão com agente existente — fs-discovery é a fonte da verdade.
+  try {
+    const existing = await listAgents();
+    if (existing.some((a) => a.id === id)) {
+      return NextResponse.json(
+        { error: `Já existe um agente com id "${id}".` },
+        { status: 409 },
+      );
+    }
+  } catch (err) {
+    console.error("[api/agents POST] listAgents failed", err);
+    // Continua mesmo se listAgents falha — `agents add` vai rejeitar duplicates.
+  }
+
+  const workspace = workspacePathFor(id);
+
+  // Executa create + set-identity sob o mesmo lock pra evitar interleave.
+  let createdViaCli = false;
+  let identityOk = false;
+  let identityWarning: string | undefined;
+
+  try {
+    await withConfigLock(async () => {
+      // Step 1: create
+      await openclawExec(
+        [
+          "agents",
+          "add",
+          id,
+          "--workspace",
+          workspace,
+          "--model",
+          model,
+          "--non-interactive",
+          "--json",
+        ],
+        { timeoutMs: 30_000 },
+      );
+      createdViaCli = true;
+
+      // Step 2: set-identity (best-effort)
+      if (friendlyName || emoji || theme) {
+        const identityArgs = ["agents", "set-identity", "--agent", id, "--json"];
+        if (friendlyName) identityArgs.push("--name", friendlyName);
+        if (emoji) identityArgs.push("--emoji", emoji);
+        if (theme) identityArgs.push("--theme", theme);
+        try {
+          await openclawExec(identityArgs, { timeoutMs: 15_000 });
+          identityOk = true;
+        } catch (idErr) {
+          identityWarning =
+            idErr instanceof OpenClawExecError
+              ? idErr.result.stderr || idErr.message
+              : idErr instanceof Error
+                ? idErr.message
+                : String(idErr);
+        }
+      } else {
+        identityOk = true; // nothing to set
+      }
+    });
+
+    await auditMutation(request, {
+      action: "agent.create",
+      target: id,
+      ok: true,
+      meta: {
+        model,
+        workspace,
+        identityOk,
+        identityWarning,
+      },
+    });
+
+    return NextResponse.json(
+      {
+        success: true,
+        agent: { id, name: friendlyName ?? id, emoji, theme, model, workspace },
+        identityOk,
+        identityWarning,
+      },
+      { status: 201 },
+    );
+  } catch (err) {
+    await auditMutation(request, {
+      action: "agent.create",
+      target: id,
+      ok: false,
+      meta: { createdViaCli, identityOk },
+    });
+    if (err instanceof OpenClawExecError) {
+      // Se "add" rejeita por id duplicado, devolve 409.
+      const stderrLower = (err.result.stderr || "").toLowerCase();
+      if (
+        stderrLower.includes("already") ||
+        stderrLower.includes("exists") ||
+        stderrLower.includes("duplicate")
+      ) {
+        return NextResponse.json(
+          { error: `Agente "${id}" já existe.` },
+          { status: 409 },
+        );
+      }
+      return NextResponse.json(
+        {
+          error: "openclaw agents add falhou",
+          detail: err.result.stderr || err.message,
+        },
+        { status: 502 },
+      );
+    }
+    return NextResponse.json(
+      {
+        error: "unexpected error",
+        detail: err instanceof Error ? err.message : String(err),
+      },
       { status: 500 },
     );
   }

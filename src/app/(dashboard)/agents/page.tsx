@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import {
   Bot,
   Circle,
@@ -12,8 +13,10 @@ import {
   ExternalLink,
   GitBranch,
   LayoutGrid,
+  Plus,
 } from "lucide-react";
 import { AgentOrganigrama } from "@/components/AgentOrganigrama";
+import { CreateAgentWizard } from "@/components/CreateAgentWizard";
 
 interface Agent {
   id: string;
@@ -37,9 +40,11 @@ interface Agent {
 }
 
 export default function AgentsPage() {
+  const router = useRouter();
   const [agents, setAgents] = useState<Agent[]>([]);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<"cards" | "organigrama">("cards");
+  const [showWizard, setShowWizard] = useState(false);
 
   useEffect(() => {
     fetchAgents();
@@ -88,21 +93,35 @@ export default function AgentsPage() {
   return (
     <div className="p-4 md:p-8">
       {/* Header */}
-      <div className="mb-6">
-        <h1
-          className="text-3xl font-bold mb-2"
+      <div className="mb-6 flex items-start justify-between gap-4 flex-wrap">
+        <div>
+          <h1
+            className="text-3xl font-bold mb-2"
+            style={{
+              fontFamily: "var(--font-heading)",
+              color: "var(--text-primary)",
+              letterSpacing: "-1.5px",
+            }}
+          >
+            <Users className="inline-block w-8 h-8 mr-2 mb-1" />
+            Agents
+          </h1>
+          <p style={{ color: "var(--text-secondary)", fontSize: "14px" }}>
+            Multi-agent system overview • {agents.length} agents configured
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => setShowWizard(true)}
+          className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-all hover:opacity-90"
           style={{
-            fontFamily: "var(--font-heading)",
-            color: "var(--text-primary)",
-            letterSpacing: "-1.5px",
+            backgroundColor: "var(--accent)",
+            color: "white",
           }}
         >
-          <Users className="inline-block w-8 h-8 mr-2 mb-1" />
-          Agents
-        </h1>
-        <p style={{ color: "var(--text-secondary)", fontSize: "14px" }}>
-          Multi-agent system overview • {agents.length} agents configured
-        </p>
+          <Plus className="w-4 h-4" />
+          Novo agente
+        </button>
       </div>
 
       {/* Tab switcher */}
@@ -148,7 +167,16 @@ export default function AgentsPage() {
         {agents.map((agent) => (
           <div
             key={agent.id}
-            className="rounded-xl overflow-hidden transition-all hover:scale-[1.02]"
+            role="button"
+            tabIndex={0}
+            onClick={() => router.push(`/agents/${agent.id}`)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                router.push(`/agents/${agent.id}`);
+              }
+            }}
+            className="rounded-xl overflow-hidden transition-all hover:scale-[1.02] cursor-pointer focus:outline-none focus:ring-2 focus:ring-offset-2"
             style={{
               backgroundColor: "var(--card)",
               border: "1px solid var(--border)",
@@ -365,6 +393,19 @@ export default function AgentsPage() {
         ))}
       </div>
       )}
+
+      <CreateAgentWizard
+        isOpen={showWizard}
+        onClose={() => setShowWizard(false)}
+        onSuccess={(created) => {
+          setShowWizard(false);
+          fetchAgents();
+          if (created?.id) {
+            router.push(`/agents/${created.id}`);
+          }
+        }}
+        existingIds={agents.map((a) => a.id)}
+      />
     </div>
   );
 }
