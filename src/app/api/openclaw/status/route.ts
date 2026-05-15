@@ -3,34 +3,30 @@
  * GET /api/openclaw/status
  *
  * Roda `openclaw channels status --json` dentro do container do gateway
- * e devolve o JSON parseado. Cache de 5s no servidor pra não martelar
- * o RPC quando vários abas estão abertas — o dashboard tipicamente faz
- * polling pra esse endpoint a cada 10-15s.
+ * e devolve o JSON parseado.
+ *
+ * Cache: TTL 30s fresh, maxAge 120s stale-while-revalidate. Single-flight
+ * pra evitar stampede (ver openclaw-cache.ts — problema observado em prod
+ * em 2026-05-15 quando /settings polling spawnava 4 execs concorrentes
+ * cada qual consumindo ~300MB de RAM no kozw).
  */
 import { NextResponse } from "next/server";
 import { openclawExec, OpenClawExecError } from "@/lib/openclaw-exec";
+import { SingleFlightCache } from "@/lib/openclaw-cache";
 
-interface CachedStatus {
-  ts: number;
-  data: unknown;
-}
-
-const CACHE_TTL_MS = 5_000;
-let cache: CachedStatus | null = null;
+const cache = new SingleFlightCache<unknown>({
+  ttlMs: 30_000,
+  maxAgeMs: 120_000,
+});
 
 export async function GET() {
-  const now = Date.now();
-  if (cache && now - cache.ts < CACHE_TTL_MS) {
-    return NextResponse.json(cache.data);
-  }
-
   try {
-    const result = await openclawExec(
-      ["channels", "status", "--json"],
-      { timeoutMs: 10_000 },
-    );
-    const data = JSON.parse(result.stdout);
-    cache = { ts: now, data };
+    const data = await cache.get(async () => {
+      const result = await openclawExec(["channels", "status", "--json"], {
+        timeoutMs: 10_000,
+      });
+      return JSON.parse(result.stdout);
+    });
     return NextResponse.json(data);
   } catch (err) {
     const message =

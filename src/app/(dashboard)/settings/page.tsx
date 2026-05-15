@@ -167,7 +167,11 @@ export default function SettingsPage() {
 
   useEffect(() => {
     refresh();
-    const id = setInterval(refresh, 15_000);
+    // Polling de 60s: modelo do agente, profiles OAuth e canais não
+    // mudam em segundos. 4× docker exec a cada 15s sobrecarrega o
+    // kozw (incident 2026-05-15). Combine com SingleFlightCache nos
+    // endpoints pra absorver page refresh/multi-tab sem stampede.
+    const id = setInterval(refresh, 60_000);
     return () => clearInterval(id);
   }, [refresh]);
 

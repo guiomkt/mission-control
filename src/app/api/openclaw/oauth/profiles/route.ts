@@ -6,65 +6,57 @@
  * de ANSI, parseia as linhas `- key [provider/type; status]` e devolve
  * o resultado anotado (health, daysRemaining, catalogEntry).
  *
- * O dashboard chama esse endpoint no mesmo intervalo de polling de
- * 15s usado pelo /settings — cache 15s no servidor pra eliminar a
- * sobrecarga em caso de múltiplas abas abertas.
+ * Cache: TTL 60s fresh, maxAge 300s stale-while-revalidate. Single-flight
+ * pra evitar stampede de docker exec spawn (ver openclaw-cache.ts).
  */
 import { NextResponse } from "next/server";
 import { openclawExec, OpenClawExecError } from "@/lib/openclaw-exec";
 import { buildSnapshot, OAUTH_PROVIDERS } from "@/lib/oauth-profile-parser";
+import { SingleFlightCache } from "@/lib/openclaw-cache";
 
 export const dynamic = "force-dynamic";
 
-interface CachedSnapshot {
-  ts: number;
-  payload: unknown;
-}
-
-const CACHE_TTL_MS = 15_000;
-let cache: CachedSnapshot | null = null;
+const cache = new SingleFlightCache<unknown>({
+  ttlMs: 60_000,
+  maxAgeMs: 300_000,
+});
 
 export async function GET() {
-  const now = Date.now();
-  if (cache && now - cache.ts < CACHE_TTL_MS) {
-    return NextResponse.json(cache.payload);
-  }
-
   try {
-    // `models auth list` é read-only — sem lock necessário.
-    const result = await openclawExec(["models", "auth", "list"], {
-      timeoutMs: 10_000,
-    });
-    const snapshot = buildSnapshot(result.stdout + "\n" + result.stderr);
-    const payload = {
-      providers: snapshot.providers.map((p) => ({
-        id: p.catalogEntry.id,
-        label: p.catalogEntry.label,
-        brand: p.catalogEntry.brand,
-        reconnectMethod: p.catalogEntry.reconnectMethod,
-        profiles: p.profiles.map((prof) => ({
-          key: prof.key,
-          label: prof.label,
-          type: prof.type,
-          expiresAt: prof.expiresAt,
-          cooldownUntil: prof.cooldownUntil,
-          health: prof.health,
-          daysRemaining: prof.daysRemaining,
-          statusDetail: prof.statusDetail,
+    const payload = await cache.get(async () => {
+      const result = await openclawExec(["models", "auth", "list"], {
+        timeoutMs: 10_000,
+      });
+      const snapshot = buildSnapshot(result.stdout + "\n" + result.stderr);
+      return {
+        providers: snapshot.providers.map((p) => ({
+          id: p.catalogEntry.id,
+          label: p.catalogEntry.label,
+          brand: p.catalogEntry.brand,
+          reconnectMethod: p.catalogEntry.reconnectMethod,
+          profiles: p.profiles.map((prof) => ({
+            key: prof.key,
+            label: prof.label,
+            type: prof.type,
+            expiresAt: prof.expiresAt,
+            cooldownUntil: prof.cooldownUntil,
+            health: prof.health,
+            daysRemaining: prof.daysRemaining,
+            statusDetail: prof.statusDetail,
+          })),
         })),
-      })),
-      otherProfiles: snapshot.otherProfiles.map((p) => ({
-        key: p.key,
-        providerId: p.providerId,
-        type: p.type,
-        expiresAt: p.expiresAt,
-        cooldownUntil: p.cooldownUntil,
-        health: p.health,
-        daysRemaining: p.daysRemaining,
-      })),
-      catalog: OAUTH_PROVIDERS,
-    };
-    cache = { ts: now, payload };
+        otherProfiles: snapshot.otherProfiles.map((p) => ({
+          key: p.key,
+          providerId: p.providerId,
+          type: p.type,
+          expiresAt: p.expiresAt,
+          cooldownUntil: p.cooldownUntil,
+          health: p.health,
+          daysRemaining: p.daysRemaining,
+        })),
+        catalog: OAUTH_PROVIDERS,
+      };
+    });
     return NextResponse.json(payload);
   } catch (err) {
     const message =

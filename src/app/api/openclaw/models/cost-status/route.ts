@@ -4,8 +4,10 @@
  *
  * Le `openclaw models status`, parseia as linhas Default + Fallbacks, e
  * classifica cada modelo como OAuth (subscription) ou Paid (API key
- * pay-per-token). UI usa pra destacar com vermelho se algo silenciosamente
- * mudar pra paid.
+ * pay-per-token).
+ *
+ * Cache: TTL 60s fresh, maxAge 300s stale-while-revalidate. Single-flight
+ * pra evitar stampede (ver openclaw-cache.ts).
  *
  * Classificação:
  *  - openai-codex/*    → OAuth (ChatGPT Plus)
@@ -13,16 +15,12 @@
  *  - anthropic/*       → OAuth (Claude Pro via sk-ant-oat01-* tokens)
  *  - openai/*          → PAID (OPENAI_API_KEY)
  *  - google/*          → PAID (GEMINI_API_KEY)
- *  - deepseek/*        → PAID (DEEPSEEK_API_KEY)
- *  - moonshot/*        → PAID (MOONSHOT_API_KEY — distinct from minimax-portal!)
- *  - perplexity/*      → PAID
- *  - github-copilot/*  → SUBSCRIPTION (paid but bounded)
- *
- * Cache 15s no servidor pra ficar barato no polling.
+ *  - deepseek/*, moonshot/*, perplexity/* → PAID
  */
 import { NextResponse } from "next/server";
 import { openclawExec, OpenClawExecError } from "@/lib/openclaw-exec";
 import { stripAnsi } from "@/lib/oauth-profile-parser";
+import { SingleFlightCache } from "@/lib/openclaw-cache";
 
 export const dynamic = "force-dynamic";
 
@@ -49,90 +47,79 @@ function classifyModel(modelId: string): CostClass {
   return "unknown";
 }
 
-interface CachedSnapshot {
-  ts: number;
-  payload: unknown;
-}
-
-const CACHE_TTL_MS = 15_000;
-let cache: CachedSnapshot | null = null;
+const cache = new SingleFlightCache<unknown>({
+  ttlMs: 60_000,
+  maxAgeMs: 300_000,
+});
 
 export async function GET() {
-  const now = Date.now();
-  if (cache && now - cache.ts < CACHE_TTL_MS) {
-    return NextResponse.json(cache.payload);
-  }
-
   try {
-    const result = await openclawExec(["models", "status"], {
-      timeoutMs: 10_000,
-    });
-    const clean = stripAnsi(result.stdout + "\n" + result.stderr);
+    const payload = await cache.get(async () => {
+      const result = await openclawExec(["models", "status"], {
+        timeoutMs: 10_000,
+      });
+      const clean = stripAnsi(result.stdout + "\n" + result.stderr);
 
-    // Parse heurístico das linhas Default e Fallbacks.
-    //   Default       : openai-codex/gpt-5.4
-    //   Fallbacks (1) : minimax-portal/MiniMax-M2.7
-    //   Aliases (9)   : ChatGPT 5.4 -> openai/gpt-5.4, ...
-    const defaultMatch = clean.match(/Default\s*:\s*(\S+)/i);
-    const fallbacksMatch = clean.match(/Fallbacks\s*\(\d+\)\s*:\s*([^\n]+)/i);
-    const aliasesMatch = clean.match(/Aliases\s*\(\d+\)\s*:\s*([^\n]+)/i);
+      const defaultMatch = clean.match(/Default\s*:\s*(\S+)/i);
+      const fallbacksMatch = clean.match(/Fallbacks\s*\(\d+\)\s*:\s*([^\n]+)/i);
+      const aliasesMatch = clean.match(/Aliases\s*\(\d+\)\s*:\s*([^\n]+)/i);
 
-    const defaultModel = defaultMatch?.[1] ?? null;
-    const fallbacks = fallbacksMatch
-      ? fallbacksMatch[1]
-          .split(",")
-          .map((s) => s.trim())
-          .filter((s) => s && s !== "-")
-      : [];
+      const defaultModel = defaultMatch?.[1] ?? null;
+      const fallbacks = fallbacksMatch
+        ? fallbacksMatch[1]
+            .split(",")
+            .map((s) => s.trim())
+            .filter((s) => s && s !== "-")
+        : [];
 
-    // Aliases parsing: "ChatGPT 5.4 -> openai/gpt-5.4"
-    const aliases: Array<{ name: string; target: string; costClass: CostClass }> = [];
-    if (aliasesMatch) {
-      for (const part of aliasesMatch[1].split(",")) {
-        const m = part.trim().match(/^(.+?)\s*->\s*(\S+)$/);
-        if (m) {
-          const name = m[1].trim();
-          const target = m[2].trim();
-          aliases.push({ name, target, costClass: classifyModel(target) });
+      const aliases: Array<{
+        name: string;
+        target: string;
+        costClass: CostClass;
+      }> = [];
+      if (aliasesMatch) {
+        for (const part of aliasesMatch[1].split(",")) {
+          const m = part.trim().match(/^(.+?)\s*->\s*(\S+)$/);
+          if (m) {
+            const name = m[1].trim();
+            const target = m[2].trim();
+            aliases.push({ name, target, costClass: classifyModel(target) });
+          }
         }
       }
-    }
 
-    const defaultCost: CostClass = defaultModel
-      ? classifyModel(defaultModel)
-      : "unknown";
-    const fallbackCosts = fallbacks.map((m) => ({
-      model: m,
-      costClass: classifyModel(m),
-    }));
+      const defaultCost: CostClass = defaultModel
+        ? classifyModel(defaultModel)
+        : "unknown";
+      const fallbackCosts = fallbacks.map((m) => ({
+        model: m,
+        costClass: classifyModel(m),
+      }));
 
-    // Alert flags
-    const defaultIsPaid = defaultCost === "paid";
-    const anyFallbackPaid = fallbackCosts.some((f) => f.costClass === "paid");
-    const aliasesPointingToPaid = aliases.filter((a) => a.costClass === "paid");
+      const defaultIsPaid = defaultCost === "paid";
+      const anyFallbackPaid = fallbackCosts.some((f) => f.costClass === "paid");
+      const aliasesPointingToPaid = aliases.filter(
+        (a) => a.costClass === "paid",
+      );
 
-    // Severity: red if default is paid, yellow if only fallback or aliases paid
-    let severity: "ok" | "warn" | "alert";
-    if (defaultIsPaid) {
-      severity = "alert";
-    } else if (anyFallbackPaid || aliasesPointingToPaid.length > 0) {
-      severity = "warn";
-    } else {
-      severity = "ok";
-    }
+      let severity: "ok" | "warn" | "alert";
+      if (defaultIsPaid) severity = "alert";
+      else if (anyFallbackPaid || aliasesPointingToPaid.length > 0)
+        severity = "warn";
+      else severity = "ok";
 
-    const payload = {
-      defaultModel,
-      defaultCostClass: defaultCost,
-      fallbacks: fallbackCosts,
-      aliasesPointingToPaid: aliasesPointingToPaid.map((a) => ({
-        name: a.name,
-        target: a.target,
-      })),
-      severity,
-      checkedAt: new Date().toISOString(),
-    };
-    cache = { ts: now, payload };
+      return {
+        defaultModel,
+        defaultCostClass: defaultCost,
+        fallbacks: fallbackCosts,
+        aliasesPointingToPaid: aliasesPointingToPaid.map((a) => ({
+          name: a.name,
+          target: a.target,
+        })),
+        severity,
+        checkedAt: new Date().toISOString(),
+      };
+    });
     return NextResponse.json(payload);
   } catch (err) {
     const message =
