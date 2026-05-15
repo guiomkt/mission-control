@@ -25,6 +25,7 @@ import { BindingsManager } from "@/components/BindingsManager";
 import { SubagentsEditor } from "@/components/SubagentsEditor";
 import { HeartbeatEditor } from "@/components/HeartbeatEditor";
 import { PromptTab } from "@/components/PromptTab";
+import { SkillsManager } from "@/components/SkillsManager";
 
 interface AgentHeartbeat {
   every?: string;
@@ -331,9 +332,8 @@ export default function AgentDetailPage() {
         />
       )}
       {activeTab === "prompt" && <PromptTab agentId={agent.id} />}
-      {(activeTab === "skills" ||
-        activeTab === "sessions" ||
-        activeTab === "analytics") && (
+      {activeTab === "skills" && <SkillsManager agentId={agent.id} />}
+      {(activeTab === "sessions" || activeTab === "analytics") && (
         <Placeholder phase={TABS.find((t) => t.key === activeTab)?.phase ?? 0} />
       )}
 
