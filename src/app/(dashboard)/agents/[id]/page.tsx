@@ -18,6 +18,8 @@ import {
   MessageSquare,
   History,
   BarChart3,
+  Copy,
+  Download,
 } from "lucide-react";
 import { EditAgentIdentityModal } from "@/components/EditAgentIdentityModal";
 import { DeleteAgentDialog } from "@/components/DeleteAgentDialog";
@@ -28,6 +30,8 @@ import { PromptTab } from "@/components/PromptTab";
 import { SkillsManager } from "@/components/SkillsManager";
 import { SessionsBrowser } from "@/components/SessionsBrowser";
 import { AgentAnalyticsCard } from "@/components/AgentAnalyticsCard";
+import { ModelSwapEditor } from "@/components/ModelSwapEditor";
+import { CloneAgentDialog } from "@/components/CloneAgentDialog";
 
 interface AgentHeartbeat {
   every?: string;
@@ -95,6 +99,7 @@ export default function AgentDetailPage() {
 
   const [editOpen, setEditOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [cloneOpen, setCloneOpen] = useState(false);
 
   const fetchAgent = useCallback(async () => {
     if (!id) return;
@@ -234,7 +239,7 @@ export default function AgentDetailPage() {
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <button
             onClick={() => setEditOpen(true)}
             className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm"
@@ -247,6 +252,34 @@ export default function AgentDetailPage() {
             <Edit3 className="w-4 h-4" />
             Editar identidade
           </button>
+          <button
+            onClick={() => setCloneOpen(true)}
+            className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm"
+            style={{
+              backgroundColor: "var(--card-elevated)",
+              border: "1px solid var(--border)",
+              color: "var(--text-primary)",
+            }}
+            title="Duplicar agente (copia workspace + config)"
+          >
+            <Copy className="w-4 h-4" />
+            Clonar
+          </button>
+          <a
+            href={`/api/agents/${encodeURIComponent(agent.id)}/export`}
+            download
+            className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm"
+            style={{
+              backgroundColor: "var(--card-elevated)",
+              border: "1px solid var(--border)",
+              color: "var(--text-primary)",
+              textDecoration: "none",
+            }}
+            title="Baixar tarball workspace + config"
+          >
+            <Download className="w-4 h-4" />
+            Exportar
+          </a>
           <button
             onClick={() => setDeleteOpen(true)}
             disabled={agent.isMain}
@@ -308,7 +341,9 @@ export default function AgentDetailPage() {
       </div>
 
       {/* Tab content */}
-      {activeTab === "identity" && <IdentityTab agent={agent} />}
+      {activeTab === "identity" && (
+        <IdentityTab agent={agent} onModelChange={fetchAgent} />
+      )}
       {activeTab === "bindings" && (
         <BindingsManager
           agentId={agent.id}
@@ -369,13 +404,29 @@ export default function AgentDetailPage() {
           referencedBy: agent.referencedBy,
         }}
       />
+      <CloneAgentDialog
+        isOpen={cloneOpen}
+        onClose={() => setCloneOpen(false)}
+        onSuccess={(created) => {
+          setCloneOpen(false);
+          if (created?.id) router.push(`/agents/${created.id}`);
+        }}
+        sourceAgent={{ id: agent.id, name: agent.name }}
+        existingIds={agent.siblings.map((s) => s.id).concat(agent.id)}
+      />
     </div>
   );
 }
 
 // ── Tabs ──────────────────────────────────────────────────────────────
 
-function IdentityTab({ agent }: { agent: AgentDetail }) {
+function IdentityTab({
+  agent,
+  onModelChange,
+}: {
+  agent: AgentDetail;
+  onModelChange: () => void;
+}) {
   return (
     <div className="space-y-4 max-w-2xl">
       <Section title="Identidade">
@@ -412,22 +463,15 @@ function IdentityTab({ agent }: { agent: AgentDetail }) {
         </InfoRow>
       </Section>
 
-      <Section title="Configuração runtime">
-        <InfoRow label="Modelo">
-          <code className="text-xs">{agent.model ?? "—"}</code>
-        </InfoRow>
-        {agent.fallbacks.length > 0 && (
-          <InfoRow label="Fallbacks">
-            <div className="space-y-1">
-              {agent.fallbacks.map((f) => (
-                <code key={f} className="block text-xs">
-                  {f}
-                </code>
-              ))}
-            </div>
-          </InfoRow>
-        )}
-        <InfoRow label="Workspace">
+      <ModelSwapEditor
+        agentId={agent.id}
+        currentPrimary={agent.model}
+        currentFallbacks={agent.fallbacks}
+        onChange={onModelChange}
+      />
+
+      <Section title="Workspace">
+        <InfoRow label="Path">
           <code className="text-xs">{agent.workspace}</code>
         </InfoRow>
       </Section>

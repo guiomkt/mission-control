@@ -14,9 +14,11 @@ import {
   GitBranch,
   LayoutGrid,
   Plus,
+  Upload,
 } from "lucide-react";
 import { AgentOrganigrama } from "@/components/AgentOrganigrama";
 import { CreateAgentWizard } from "@/components/CreateAgentWizard";
+import { ImportAgentDialog } from "@/components/ImportAgentDialog";
 
 interface Agent {
   id: string;
@@ -45,6 +47,7 @@ export default function AgentsPage() {
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<"cards" | "organigrama">("cards");
   const [showWizard, setShowWizard] = useState(false);
+  const [showImport, setShowImport] = useState(false);
 
   useEffect(() => {
     fetchAgents();
@@ -110,18 +113,34 @@ export default function AgentsPage() {
             Multi-agent system overview • {agents.length} agents configured
           </p>
         </div>
-        <button
-          type="button"
-          onClick={() => setShowWizard(true)}
-          className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-all hover:opacity-90"
-          style={{
-            backgroundColor: "var(--accent)",
-            color: "white",
-          }}
-        >
-          <Plus className="w-4 h-4" />
-          Novo agente
-        </button>
+        <div className="flex items-center gap-2 flex-wrap">
+          <button
+            type="button"
+            onClick={() => setShowImport(true)}
+            className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-all hover:opacity-90"
+            style={{
+              backgroundColor: "var(--card-elevated)",
+              border: "1px solid var(--border)",
+              color: "var(--text-primary)",
+            }}
+            title="Importar de um tarball"
+          >
+            <Upload className="w-4 h-4" />
+            Importar
+          </button>
+          <button
+            type="button"
+            onClick={() => setShowWizard(true)}
+            className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-all hover:opacity-90"
+            style={{
+              backgroundColor: "var(--accent)",
+              color: "white",
+            }}
+          >
+            <Plus className="w-4 h-4" />
+            Novo agente
+          </button>
+        </div>
       </div>
 
       {/* Tab switcher */}
@@ -399,6 +418,18 @@ export default function AgentsPage() {
         onClose={() => setShowWizard(false)}
         onSuccess={(created) => {
           setShowWizard(false);
+          fetchAgents();
+          if (created?.id) {
+            router.push(`/agents/${created.id}`);
+          }
+        }}
+        existingIds={agents.map((a) => a.id)}
+      />
+      <ImportAgentDialog
+        isOpen={showImport}
+        onClose={() => setShowImport(false)}
+        onSuccess={(created) => {
+          setShowImport(false);
           fetchAgents();
           if (created?.id) {
             router.push(`/agents/${created.id}`);

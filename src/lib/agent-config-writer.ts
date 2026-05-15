@@ -27,7 +27,7 @@ import { withConfigLock } from "@/lib/openclaw-exec";
 const KOZW_OPENCLAW_DIR = "/docker/openclaw-kozw/data/.openclaw";
 
 /** Campos em `agents.list[i]` que esse helper aceita escrever. */
-export type AgentMutableKey = "subagents" | "heartbeat";
+export type AgentMutableKey = "subagents" | "heartbeat" | "model";
 
 export interface AgentSubagents {
   allowAgents: string[];
@@ -47,11 +47,24 @@ export interface AgentHeartbeat {
   isolatedSession?: boolean;
 }
 
+export interface AgentModel {
+  /** Modelo primário (formato: provider/slug, ex: openai-codex/gpt-5.4). */
+  primary: string;
+  /** Lista de fallbacks ordenada. */
+  fallbacks?: string[];
+}
+
 export interface AgentMutation {
   /** Setar `agents.list[i].subagents`. `null` remove a chave inteira. */
   subagents?: AgentSubagents | null;
   /** Setar `agents.list[i].heartbeat`. `null` remove a chave inteira. */
   heartbeat?: AgentHeartbeat | null;
+  /**
+   * Setar `agents.list[i].model`. `null` remove (volta pro defaults).
+   * **Whitelist OAuth-only enforced no caller** — esse módulo só
+   * persiste; quem chama precisa validar.
+   */
+  model?: AgentModel | null;
 }
 
 export class AgentConfigWriterError extends Error {
@@ -143,7 +156,7 @@ import json, sys, time, shutil
 
 agent_id = sys.argv[1]
 patch = json.loads(sys.stdin.read())
-ALLOWED_KEYS = {"subagents", "heartbeat"}
+ALLOWED_KEYS = {"subagents", "heartbeat", "model"}
 
 bad = [k for k in patch.keys() if k not in ALLOWED_KEYS]
 if bad:
@@ -219,11 +232,12 @@ export async function mutateAgentEntry(
   const filtered: AgentMutation = {};
   if ("subagents" in mutation) filtered.subagents = mutation.subagents;
   if ("heartbeat" in mutation) filtered.heartbeat = mutation.heartbeat;
+  if ("model" in mutation) filtered.model = mutation.model;
   if (Object.keys(filtered).length === 0) {
     throw new AgentConfigWriterError(
       "no allowed keys in mutation",
       "",
-      "allowed: subagents, heartbeat",
+      "allowed: subagents, heartbeat, model",
     );
   }
 
