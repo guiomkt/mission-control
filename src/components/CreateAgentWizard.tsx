@@ -41,8 +41,7 @@ const DEFAULT_FORM: FormState = {
 const MODEL_OPTIONS = [
   { value: "openai-codex/gpt-5.4", label: "ChatGPT 5.4 (OAuth) — recomendado" },
   { value: "openai-codex/gpt-5.4-pro", label: "ChatGPT 5.4 Pro (OAuth)" },
-  { value: "openai-codex/gpt-5.2", label: "ChatGPT 5.2 (OAuth)" },
-  { value: "openai-codex/gpt-5.1-codex-max", label: "ChatGPT 5.1 Codex Max (OAuth)" },
+  // Removidos em 2026-05-18 (OpenClaw 2026.5.12 deprecou gpt-5.2 + gpt-5.1-codex-max).
   {
     value: "minimax-portal/MiniMax-M2.7",
     label: "Minimax M2.7 (OAuth — fallback)",

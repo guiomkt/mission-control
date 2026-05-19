@@ -35,11 +35,9 @@ export const OAUTH_MODELS = [
     recommended: true,
   },
   { value: "openai-codex/gpt-5.4-pro", label: "ChatGPT 5.4 Pro (OAuth)" },
-  { value: "openai-codex/gpt-5.2", label: "ChatGPT 5.2 (OAuth)" },
-  {
-    value: "openai-codex/gpt-5.1-codex-max",
-    label: "ChatGPT 5.1 Codex Max (OAuth)",
-  },
+  // Removidos em 2026-05-18 pelo OpenClaw 2026.5.12: gpt-5.2 e gpt-5.1-codex-max
+  // foram deprecados ("no longer supported for ChatGPT/Codex OAuth accounts").
+  // Reativar exige confirmação de OAuth eligibility da nova rota.
   {
     value: "minimax-portal/MiniMax-M2.7",
     label: "Minimax M2.7 (OAuth — fallback)",
